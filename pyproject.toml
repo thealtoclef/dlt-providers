@@ -1,0 +1,23 @@
+[project]
+name = "dlt-providers"
+dynamic = ["version"]
+description = "Providers for data load tool (dlt)"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "dlt~=1.6.1",
+    "pendulum~=3.0.0",
+]
+
+[build-system]
+requires = ["hatchling", "uv-dynamic-versioning"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["dlt_providers"]
+
+[tool.hatch.version]
+source = "uv-dynamic-versioning"
+
+[tool.uv-dynamic-versioning]
+pattern = "default-unprefixed"
