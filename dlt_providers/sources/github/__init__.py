@@ -8,7 +8,7 @@ from dlt.sources import DltResource
 from dlt.sources.helpers.rest_client import RESTClient
 from dlt.sources.helpers.rest_client.auth import BearerTokenAuth
 from dlt.sources.helpers.rest_client.paginators import PageNumberPaginator
-
+from dlt.common.runtime.collector import LogCollector
 from .helpers import GitHubAppAuth
 from .settings import (
     DEFAULT_START_DATE,

@@ -2,7 +2,7 @@ import os
 from typing import Any
 
 import dlt
-
+from dlt.common.runtime.collector import Collector
 
 def set_dlt_config(config: dict[str, Any], *, prefix: str = "") -> None:
     """
@@ -24,3 +24,4 @@ def set_dlt_config(config: dict[str, Any], *, prefix: str = "") -> None:
             value = os.getenv(value[4:])  # Strip 'env:' prefix
 
         dlt.secrets[full_key] = value
+
