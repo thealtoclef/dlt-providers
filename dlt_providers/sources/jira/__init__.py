@@ -97,7 +97,7 @@ def jira(
                         limit=50,
                         offset_param="startAt",
                         limit_param="maxResults",
-                        total_path="",
+                        total_path=None,
                     ),
                 },
             },

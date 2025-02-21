@@ -198,7 +198,7 @@ wheels = [
 
 [[package]]
 name = "dlt"
-version = "1.6.1"
+version = "1.7.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "click" },
@@ -230,9 +230,9 @@ dependencies = [
     { name = "tzdata" },
     { name = "win-precise-time", marker = "os_name == 'nt'" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/92/c0/fb17676de190121db2fc1df4b478bc4f4b10dc7d7e8f7ab743abb150eaaa/dlt-1.6.1.tar.gz", hash = "sha256:df3afccf41c6ff028f7d1ba6b9c84e404b27d815c9c0623ba1b9f22990cf24c4", size = 700101 }
+sdist = { url = "https://files.pythonhosted.org/packages/78/b3/34ff50f558db70d396aa98d1e4de251e19b263708d7cd1e0407f98b2aa8b/dlt-1.7.0.tar.gz", hash = "sha256:9f4a47a703d2dd7a2542bbaac12f4d0ee3008c7b0af417ed2e1a7aa066966103", size = 706680 }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/34/77/45520f098888c593ff9bf7a8c38bd45db6db0c2a138b0c6829c58b65dc93/dlt-1.6.1-py3-none-any.whl", hash = "sha256:30a2b9ac6d93f38289c85c305ab6f19cf50e6457d4891346260969d36b735e6b", size = 884349 },
+    { url = "https://files.pythonhosted.org/packages/ac/b1/a1da9cdc05c3a8729660c61bfd2964573df30c34cd0248aa04abe62ea0d8/dlt-1.7.0-py3-none-any.whl", hash = "sha256:557bc636af801e3ad726ce876597c49c71b46de3ff96539e907c9140c6b5de94", size = 892397 },
 ]
 
 [[package]]
@@ -296,7 +296,7 @@ wheels = [
 
 [[package]]
 name = "dlt-providers"
-version = "0.0.0.post5.dev0+d19025a"
+version = "0.0.0.post5.dev0+83f0403"
 source = { editable = "." }
 dependencies = [
     { name = "cryptography" },
@@ -308,7 +308,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "cryptography", specifier = "~=44.0.1" },
-    { name = "dlt", specifier = "~=1.6.1" },
+    { name = "dlt", specifier = "~=1.7.0" },
     { name = "pendulum", specifier = "~=3.0.0" },
     { name = "pyjwt", specifier = "~=2.10.1" },
 ]

@@ -51,7 +51,7 @@ def github(
         paginator=PageNumberPaginator(
             base_page=1,
             page_param="page",
-            total_path="",
+            total_path=None,
         ),
     )
 
