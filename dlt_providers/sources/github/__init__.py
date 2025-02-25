@@ -4,6 +4,7 @@ from typing import Iterable, Literal, Optional
 import dlt
 from dlt.common import logger
 from dlt.common.exceptions import DltException
+from dlt.common.runtime.collector import LogCollector
 from dlt.sources import DltResource
 from dlt.sources.helpers.rest_client import RESTClient
 from dlt.sources.helpers.rest_client.auth import BearerTokenAuth
@@ -84,11 +85,11 @@ def github(
         for repository in repositories:
             repo_full_name = repository["full_name"]
             try:
-                # Initialize checkpoint and tracking variables
+                # Initialize checkpoint and cursor
                 checkpoint = checkpoints.get(repo_full_name, start_date)
-                latest_commit_date = None
+                new_checkpoint = None
 
-                # Get paginated commits since last checkpoint
+                # Get paginated records since checkpoint (ordered by cursor field desc)
                 pages = client.paginate(
                     path=f"/repos/{repo_full_name}/commits",
                     params={"per_page": 100, "since": checkpoint},
@@ -98,21 +99,80 @@ def github(
                     if not page:
                         break
 
-                    # Track most recent commit date from first page
-                    if latest_commit_date is None:
-                        latest_commit_date = page[0]["commit"]["committer"]["date"]
                     yield page
 
+                    # Derive new checkpoint from first result since records are order by cursor field desc
+                    if new_checkpoint is None:
+                        new_checkpoint = page[0]["commit"]["committer"]["date"]
+
                 # Update checkpoint after successful processing
-                if latest_commit_date:
-                    checkpoints[repo_full_name] = latest_commit_date
+                if new_checkpoint:
+                    checkpoints[repo_full_name] = new_checkpoint
                     logger.info(
-                        f"Updated commits checkpoint for {repo_full_name} to {latest_commit_date}"
+                        f"Updated checkpoint for {repo_full_name} from {checkpoint} to {new_checkpoint}"
                     )
 
             except Exception as e:
                 logger.error(
-                    f"Failed to process commits for {repo_full_name}: {str(e)}"
+                    f"Failed to process records for {repo_full_name}: {str(e)}"
+                )
+                continue
+
+    @dlt.transformer(
+        data_from=repositories, primary_key="id", write_disposition="merge"
+    )
+    def events(repositories):
+        """Transform and load GitHub events data with checkpointing.
+
+        Args:
+            repositories: Iterator of repository data from GitHub API
+
+        Yields:
+            Paginated event data for each repository
+        """
+        checkpoints = dlt.current.resource_state().setdefault("checkpoints", {})
+
+        for repository in repositories:
+            repo_full_name = repository["full_name"]
+            try:
+                # Initialize checkpoint and cursor
+                checkpoint = checkpoints.get(repo_full_name, start_date)
+                new_checkpoint = None
+                cursor = None
+
+                # Get paginated records (ordered by cursor field desc)
+                pages = client.paginate(
+                    path=f"/repos/{repo_full_name}/events",
+                    params={"per_page": 100},
+                )
+
+                for page in pages:
+                    if not page:
+                        break
+
+                    yield page
+
+                    # Derive new checkpoint from first result since records are order by cursor field desc
+                    if new_checkpoint is None:
+                        new_checkpoint = page[0]["created_at"]
+
+                    # Derive cursor from last result since records are order by cursor field desc
+                    cursor = page[-1]["created_at"]
+
+                    # Stop when cursor is out of range
+                    if cursor >= checkpoint:
+                        break
+
+                # Update checkpoint after successful processing
+                if new_checkpoint:
+                    checkpoints[repo_full_name] = new_checkpoint
+                    logger.info(
+                        f"Updated checkpoint for {repo_full_name} from {checkpoint} to {new_checkpoint}"
+                    )
+
+            except Exception as e:
+                logger.error(
+                    f"Failed to process records for {repo_full_name}: {str(e)}"
                 )
                 continue
 
@@ -135,10 +195,10 @@ def github(
         for repository in repositories:
             repo_full_name = repository["full_name"]
             try:
-                # Initialize checkpoint and tracking variables
+                # Initialize checkpoint and cursor
                 checkpoint = checkpoints.get(repo_full_name, start_date)
+                new_checkpoint = None
                 cursor = "*"
-                latest_run_date = None
 
                 while True:
                     in_limit = True
@@ -159,15 +219,15 @@ def github(
                         if not page:
                             break
 
+                        yield page
+
                         # Track most recent run date from first result
-                        if latest_run_date is None and page:
-                            latest_run_date = page[0]["created_at"]
+                        if new_checkpoint is None and page:
+                            new_checkpoint = page[0]["created_at"]
 
                         # Track oldest run date from last result
                         if page:
                             oldest_run_date = page[-1]["created_at"]
-
-                        yield page
 
                         # Set in_limit to False if we have reached the 1000 results limit
                         if idx >= 9:
@@ -187,10 +247,10 @@ def github(
                         )
 
                 # Update checkpoint after all pages are processed
-                if latest_run_date:
-                    checkpoints[repo_full_name] = latest_run_date
+                if new_checkpoint:
+                    checkpoints[repo_full_name] = new_checkpoint
                     logger.info(
-                        f"Updated workflow runs checkpoint for {repo_full_name} to {latest_run_date}"
+                        f"Updated workflow runs checkpoint for {repo_full_name} to {new_checkpoint}"
                     )
 
             except Exception as e:
@@ -199,4 +259,4 @@ def github(
                 )
                 continue
 
-    return [repositories, commits, workflow_runs]
+    return [repositories, commits, events]
