@@ -75,7 +75,12 @@ def jira(
                 "primary_key": "id",
                 "endpoint": {
                     "path": "/rest/api/3/issue/{issue_id}/changelog",
-                    "paginator": JSONLinkPaginator(next_url_path="nextPage"),
+                    "paginator": OffsetPaginator(
+                        limit=100,
+                        offset_param="startAt",
+                        limit_param="maxResults",
+                        total_path="total",
+                    ),
                     "data_selector": "values",
                     "params": {
                         "issue_id": {
