@@ -199,4 +199,64 @@ def github(
                 )
                 continue
 
-    return [repositories, commits, workflow_runs]
+    @dlt.transformer(
+        data_from=repositories, primary_key="id", write_disposition="merge"
+    )
+    def pull_requests(repositories):
+        """Transform and load GitHub pull requests data with checkpointing.
+
+        Args:
+            repositories: Iterator of repository data from GitHub API
+
+        Yields:
+            Paginated pull requests data for each repository
+        """
+        checkpoints = dlt.current.resource_state().setdefault("pr_checkpoints", {})
+
+        for repository in repositories:
+            repo_full_name = repository["full_name"]
+            try:
+                # Initialize checkpoint and tracking variables
+                checkpoint = checkpoints.get(repo_full_name, start_date)
+                latest_pr_date = None
+
+                # Get paginated pull requests since last checkpoint
+                pages = client.paginate(
+                    path=f"/repos/{repo_full_name}/pulls",
+                    params={
+                        "per_page": 100,
+                        "state": "all",
+                        "sort": "updated",
+                        "direction": "desc",
+                    },
+                )
+
+                for page in pages:
+                    if not page:
+                        break
+
+                    if latest_pr_date is None and page:
+                        latest_pr_date = page[0]["updated_at"]
+
+                    # Filter by updated_at date to respect the checkpoint
+                    filtered_prs = [pr for pr in page if pr["updated_at"] >= checkpoint]
+
+                    if not filtered_prs:
+                        break
+
+                    yield filtered_prs
+
+                # Update checkpoint after successful processing
+                if latest_pr_date:
+                    checkpoints[repo_full_name] = latest_pr_date
+                    logger.info(
+                        f"Updated pull requests checkpoint for {repo_full_name} to {latest_pr_date}"
+                    )
+
+            except Exception as e:
+                logger.error(
+                    f"Failed to process pull requests for {repo_full_name}: {str(e)}"
+                )
+                continue
+
+    return [repositories, commits, workflow_runs, pull_requests]
