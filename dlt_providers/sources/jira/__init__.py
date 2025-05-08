@@ -58,12 +58,12 @@ def jira(
                     ),
                     "data_selector": "issues",
                     "incremental": {
-                        "start_param": "jql",
                         "cursor_path": "fields.updated",
                         "initial_value": start_date,
                         "convert": lambda start_value: f"updated >= '{pendulum.parse(start_value).format('YYYY-MM-DD HH:mm')}'",
                     },
                     "params": {
+                        "jql": "{incremental.start_value}",
                         "fields": "*all",
                         "expand": "renderedFields",
                     },
