@@ -104,9 +104,10 @@ def github(
 
         for repository in repositories:
             repo_full_name = repository["full_name"]
+            checkpoint_key = f"{repo_full_name}_commits"
             try:
                 # Initialize checkpoint and tracking variables
-                stored_checkpoint = checkpoints.get(repo_full_name, start_date)
+                stored_checkpoint = checkpoints.get(checkpoint_key, start_date)
                 if stored_checkpoint != start_date:
                     checkpoint_date = datetime.fromisoformat(
                         stored_checkpoint.replace("Z", "+00:00")
@@ -137,7 +138,7 @@ def github(
 
                 # Update checkpoint after successful processing
                 if latest_commit_date:
-                    checkpoints[repo_full_name] = latest_commit_date
+                    checkpoints[checkpoint_key] = latest_commit_date
                     logger.info(
                         f"Updated commits checkpoint for {repo_full_name} to {latest_commit_date}"
                     )
@@ -151,55 +152,22 @@ def github(
     @dlt.transformer(
         data_from=repositories, primary_key="id", write_disposition="merge"
     )
-    def workflows(repositories):
-        """Transform and load GitHub workflows data with checkpointing.
+    def workflow_runs(repositories):
+        """Transform and load GitHub workflow runs data with checkpointing.
 
         Args:
             repositories: Iterator of repository data from GitHub API
 
         Yields:
-            Paginated workflows data for each repository
+            Paginated workflow runs data for each repository
         """
+        checkpoints = dlt.current.resource_state().setdefault("checkpoints", {})
+
         for repository in repositories:
             repo_full_name = repository["full_name"]
-            try:
-                # Get paginated workflows with cursor-based navigation
-                yield from client.paginate(
-                    path=f"/repos/{repo_full_name}/actions/workflows",
-                    params={
-                        "per_page": 100,
-                    },
-                )
-            except Exception as e:
-                logger.error(
-                    f"Failed to process workflows for {repo_full_name}: {str(e)}"
-                )
-                continue
-
-    @dlt.transformer(data_from=workflows, primary_key="id", write_disposition="merge")
-    def workflow_runs(workflows):
-        """Transform and load GitHub workflow runs data with checkpointing.
-
-        Args:
-            workflows: Iterator of workflow data from GitHub API
-
-        Yields:
-            Paginated workflow runs data for each workflow
-        """
-        checkpoints = dlt.current.resource_state().setdefault(
-            "workflow_runs_checkpoints", {}
-        )
-
-        for workflow in workflows:
-            workflow_id = workflow["id"]
-            # Extract repository full name from the workflow URL
-            repo_full_name = (
-                workflow["url"].split("/repos/")[1].split("/actions/workflows")[0]
-            )
-
+            checkpoint_key = f"{repo_full_name}_workflow_runs"
             try:
                 # Initialize checkpoint and tracking variables
-                checkpoint_key = f"{repo_full_name}_{workflow_id}"
                 stored_checkpoint = checkpoints.get(checkpoint_key, start_date)
                 if stored_checkpoint != start_date:
                     checkpoint_date = datetime.fromisoformat(
@@ -211,40 +179,63 @@ def github(
                     checkpoint = adjusted_checkpoint.isoformat()
                 else:
                     checkpoint = stored_checkpoint
-
                 latest_run_date = None
 
-                # Get paginated workflow runs since adjusted checkpoint
+                # Get paginated workflow runs with cursor-based navigation
                 pages = client.paginate(
-                    path=f"/repos/{repo_full_name}/actions/workflows/{workflow_id}/runs",
+                    path=f"/repos/{repo_full_name}/actions/runs",
                     params={
                         "per_page": 100,
                         "created": f">={checkpoint}",
                     },
+                    data_selector="workflow_runs",
                 )
 
                 for page in pages:
                     if not page:
                         break
 
-                    # Track most recent run date from first page
+                    yield page
+
+                    # Track most recent run date from first result
                     if latest_run_date is None and page:
                         latest_run_date = page[0]["created_at"]
 
-                    yield page
-
-                # Update checkpoint after successful processing
+                # Update checkpoint after all pages are processed
                 if latest_run_date:
                     checkpoints[checkpoint_key] = latest_run_date
                     logger.info(
-                        f"Updated workflow runs checkpoint for {repo_full_name}/{workflow_id} to {latest_run_date}"
+                        f"Updated workflow runs checkpoint for {repo_full_name} to {latest_run_date}"
                     )
 
             except Exception as e:
                 logger.error(
-                    f"Failed to process workflow runs for {repo_full_name}/{workflow_id}: {str(e)}"
+                    f"Failed to process workflow runs for {repo_full_name}: {str(e)}"
                 )
                 continue
+
+    @dlt.transformer(
+        data_from=workflow_runs, primary_key="id", write_disposition="merge"
+    )
+    def workflow_jobs(workflow_runs):
+        """Transform and load GitHub workflow jobs data with checkpointing.
+
+        Args:
+            workflow_runs: Iterator of workflow runs data from GitHub API
+
+        Yields:
+            Paginated workflow jobs data for each workflow run
+        """
+        for workflow_run in workflow_runs:
+            repo_full_name = workflow_run["repository"]["full_name"]
+            workflow_run_id = workflow_run["id"]
+            yield from client.paginate(
+                path=f"/repos/{repo_full_name}/actions/runs/{workflow_run_id}/jobs",
+                params={
+                    "per_page": 100,
+                },
+                data_selector="jobs",
+            )
 
     @dlt.transformer(
         data_from=repositories, primary_key="id", write_disposition="merge"
@@ -258,13 +249,14 @@ def github(
         Yields:
             Paginated pull requests data for each repository
         """
-        checkpoints = dlt.current.resource_state().setdefault("pr_checkpoints", {})
+        checkpoints = dlt.current.resource_state().setdefault("checkpoints", {})
 
         for repository in repositories:
             repo_full_name = repository["full_name"]
+            checkpoint_key = f"{repo_full_name}_pull_requests"
             try:
                 # Initialize checkpoint and tracking variables
-                stored_checkpoint = checkpoints.get(repo_full_name, start_date)
+                stored_checkpoint = checkpoints.get(checkpoint_key, start_date)
                 if stored_checkpoint != start_date:
                     checkpoint_date = datetime.fromisoformat(
                         stored_checkpoint.replace("Z", "+00:00")
@@ -306,7 +298,7 @@ def github(
 
                 # Update checkpoint after successful processing
                 if latest_pr_date:
-                    checkpoints[repo_full_name] = latest_pr_date
+                    checkpoints[checkpoint_key] = latest_pr_date
                     logger.info(
                         f"Updated pull requests checkpoint for {repo_full_name} to {latest_pr_date}"
                     )
@@ -317,4 +309,11 @@ def github(
                 )
                 continue
 
-    return [repositories, repository_labels, commits, workflows, workflow_runs, pull_requests]
+    return [
+        repositories,
+        repository_labels,
+        commits,
+        workflow_runs,
+        workflow_jobs,
+        pull_requests,
+    ]
