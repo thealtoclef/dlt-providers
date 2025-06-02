@@ -1,4 +1,5 @@
 import base64
+from datetime import datetime, timedelta
 from typing import Iterable, Literal, Optional
 
 import dlt
@@ -26,6 +27,7 @@ def github(
     gha_private_key: Optional[str] = dlt.secrets.value,
     gha_private_key_base64: Optional[str] = dlt.secrets.value,
     start_date: str = DEFAULT_START_DATE,
+    lookback_days: int = 1,
 ) -> Iterable[DltResource]:
     match auth_type:
         case "pat":
@@ -68,6 +70,25 @@ def github(
         )
 
     @dlt.transformer(
+        data_from=repositories, primary_key="id", write_disposition="merge"
+    )
+    def repository_labels(repositories):
+        """Transform and load GitHub repository labels data with checkpointing.
+
+        Args:
+            repositories: Iterator of repository data from GitHub API
+
+        Yields:
+            Paginated repository label data for each repository
+        """
+        for repository in repositories:
+            repo_full_name = repository["full_name"]
+            yield from client.paginate(
+                path=f"/repos/{repo_full_name}/labels",
+                params={"per_page": 100},
+            )
+
+    @dlt.transformer(
         data_from=repositories, primary_key="sha", write_disposition="merge"
     )
     def commits(repositories):
@@ -85,10 +106,21 @@ def github(
             repo_full_name = repository["full_name"]
             try:
                 # Initialize checkpoint and tracking variables
-                checkpoint = checkpoints.get(repo_full_name, start_date)
+                stored_checkpoint = checkpoints.get(repo_full_name, start_date)
+                if stored_checkpoint != start_date:
+                    checkpoint_date = datetime.fromisoformat(
+                        stored_checkpoint.replace("Z", "+00:00")
+                    )
+                    adjusted_checkpoint = checkpoint_date - timedelta(
+                        days=lookback_days
+                    )
+                    checkpoint = adjusted_checkpoint.isoformat()
+                else:
+                    checkpoint = stored_checkpoint
+
                 latest_commit_date = None
 
-                # Get paginated commits since last checkpoint
+                # Get paginated commits since adjusted checkpoint
                 pages = client.paginate(
                     path=f"/repos/{repo_full_name}/commits",
                     params={"per_page": 100, "since": checkpoint},
@@ -119,83 +151,98 @@ def github(
     @dlt.transformer(
         data_from=repositories, primary_key="id", write_disposition="merge"
     )
-    def workflow_runs(repositories):
-        """Transform and load GitHub workflow runs data with checkpointing.
-        Handles GitHub's 1000 results per query limit by fetching all pages
-        before updating the time window.
+    def workflows(repositories):
+        """Transform and load GitHub workflows data with checkpointing.
 
         Args:
             repositories: Iterator of repository data from GitHub API
 
         Yields:
-            Paginated workflow runs data for each repository
+            Paginated workflows data for each repository
         """
-        checkpoints = dlt.current.resource_state().setdefault("checkpoints", {})
-
         for repository in repositories:
             repo_full_name = repository["full_name"]
             try:
+                # Get paginated workflows with cursor-based navigation
+                yield from client.paginate(
+                    path=f"/repos/{repo_full_name}/actions/workflows",
+                    params={
+                        "per_page": 100,
+                    },
+                )
+            except Exception as e:
+                logger.error(
+                    f"Failed to process workflows for {repo_full_name}: {str(e)}"
+                )
+                continue
+
+    @dlt.transformer(data_from=workflows, primary_key="id", write_disposition="merge")
+    def workflow_runs(workflows):
+        """Transform and load GitHub workflow runs data with checkpointing.
+
+        Args:
+            workflows: Iterator of workflow data from GitHub API
+
+        Yields:
+            Paginated workflow runs data for each workflow
+        """
+        checkpoints = dlt.current.resource_state().setdefault(
+            "workflow_runs_checkpoints", {}
+        )
+
+        for workflow in workflows:
+            workflow_id = workflow["id"]
+            # Extract repository full name from the workflow URL
+            repo_full_name = (
+                workflow["url"].split("/repos/")[1].split("/actions/workflows")[0]
+            )
+
+            try:
                 # Initialize checkpoint and tracking variables
-                checkpoint = checkpoints.get(repo_full_name, start_date)
-                cursor = "*"
+                checkpoint_key = f"{repo_full_name}_{workflow_id}"
+                stored_checkpoint = checkpoints.get(checkpoint_key, start_date)
+                if stored_checkpoint != start_date:
+                    checkpoint_date = datetime.fromisoformat(
+                        stored_checkpoint.replace("Z", "+00:00")
+                    )
+                    adjusted_checkpoint = checkpoint_date - timedelta(
+                        days=lookback_days
+                    )
+                    checkpoint = adjusted_checkpoint.isoformat()
+                else:
+                    checkpoint = stored_checkpoint
+
                 latest_run_date = None
 
-                while True:
-                    in_limit = True
-                    oldest_run_date = None
+                # Get paginated workflow runs since adjusted checkpoint
+                pages = client.paginate(
+                    path=f"/repos/{repo_full_name}/actions/workflows/{workflow_id}/runs",
+                    params={
+                        "per_page": 100,
+                        "created": f">={checkpoint}",
+                    },
+                )
 
-                    # Get paginated workflow runs with cursor-based navigation
-                    pages = client.paginate(
-                        path=f"/repos/{repo_full_name}/actions/runs",
-                        params={
-                            "per_page": 100,
-                            "created": f"{checkpoint}..{cursor}",
-                        },
-                        data_selector="workflow_runs",
-                    )
-
-                    # Process all pages for current time window
-                    for idx, page in enumerate(pages):
-                        if not page:
-                            break
-
-                        # Track most recent run date from first result
-                        if latest_run_date is None and page:
-                            latest_run_date = page[0]["created_at"]
-
-                        # Track oldest run date from last result
-                        if page:
-                            oldest_run_date = page[-1]["created_at"]
-
-                        yield page
-
-                        # Set in_limit to False if we have reached the 1000 results limit
-                        if idx >= 9:
-                            in_limit = False
-
-                    # Break conditions:
-                    # 1. No results in this window
-                    # 2. In limit and no more pages to fetch
-                    if not page or in_limit:
+                for page in pages:
+                    if not page:
                         break
 
-                    # Update cursor to oldest run date for next iteration
-                    if oldest_run_date:
-                        cursor = oldest_run_date
-                        logger.debug(
-                            f"Updating cursor to {cursor} for {repo_full_name}"
-                        )
+                    # Track most recent run date from first page
+                    if latest_run_date is None and page:
+                        latest_run_date = page[0]["created_at"]
 
-                # Update checkpoint after all pages are processed
+                    yield page
+
+                # Update checkpoint after successful processing
                 if latest_run_date:
-                    checkpoints[repo_full_name] = latest_run_date
+                    checkpoints[checkpoint_key] = latest_run_date
                     logger.info(
-                        f"Updated workflow runs checkpoint for {repo_full_name} to {latest_run_date}"
+                        f"Updated workflow runs checkpoint for {repo_full_name}/{workflow_id} to {latest_run_date}"
                     )
 
             except Exception as e:
                 logger.error(
-                    f"Failed to process workflow runs for {repo_full_name}: {str(e)}"
+                    f"Failed to process workflow runs for {repo_full_name}/{workflow_id}: {str(e)}"
                 )
                 continue
 
@@ -217,10 +264,21 @@ def github(
             repo_full_name = repository["full_name"]
             try:
                 # Initialize checkpoint and tracking variables
-                checkpoint = checkpoints.get(repo_full_name, start_date)
+                stored_checkpoint = checkpoints.get(repo_full_name, start_date)
+                if stored_checkpoint != start_date:
+                    checkpoint_date = datetime.fromisoformat(
+                        stored_checkpoint.replace("Z", "+00:00")
+                    )
+                    adjusted_checkpoint = checkpoint_date - timedelta(
+                        days=lookback_days
+                    )
+                    checkpoint = adjusted_checkpoint.isoformat()
+                else:
+                    checkpoint = stored_checkpoint
+
                 latest_pr_date = None
 
-                # Get paginated pull requests since last checkpoint
+                # Get paginated pull requests since adjusted checkpoint
                 pages = client.paginate(
                     path=f"/repos/{repo_full_name}/pulls",
                     params={
@@ -259,4 +317,4 @@ def github(
                 )
                 continue
 
-    return [repositories, commits, workflow_runs, pull_requests]
+    return [repositories, repository_labels, commits, workflows, workflow_runs, pull_requests]
