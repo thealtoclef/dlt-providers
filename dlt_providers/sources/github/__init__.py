@@ -229,13 +229,26 @@ def github(
         for workflow_run in workflow_runs:
             repo_full_name = workflow_run["repository"]["full_name"]
             workflow_run_id = workflow_run["id"]
-            yield from client.paginate(
-                path=f"/repos/{repo_full_name}/actions/runs/{workflow_run_id}/jobs",
-                params={
-                    "per_page": 100,
-                },
-                data_selector="jobs",
-            )
+
+            try:
+                pages = client.paginate(
+                    path=f"/repos/{repo_full_name}/actions/runs/{workflow_run_id}/jobs",
+                    params={
+                        "per_page": 100,
+                    },
+                    data_selector="jobs",
+                )
+
+                for page in pages:
+                    if not page:
+                        break
+
+                    yield page
+            except Exception as e:
+                logger.error(
+                    f"Failed to process workflow jobs for {repo_full_name}: {str(e)}"
+                )
+                continue
 
     @dlt.transformer(
         data_from=repositories, primary_key="id", write_disposition="merge"
