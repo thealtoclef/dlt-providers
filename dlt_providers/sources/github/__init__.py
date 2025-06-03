@@ -28,7 +28,6 @@ def github(
     gha_private_key_base64: Optional[str] = dlt.secrets.value,
     start_date: str = DEFAULT_START_DATE,
     lookback_days: int = 1,
-    parallelized: bool = True,
 ) -> Iterable[DltResource]:
     match auth_type:
         case "pat":
@@ -58,7 +57,7 @@ def github(
         ),
     )
 
-    @dlt.resource(write_disposition="merge", primary_key="id", parallelized=parallelized)
+    @dlt.resource(write_disposition="merge", primary_key="id")
     def repositories():
         """Load GitHub repositories data.
 
@@ -74,11 +73,9 @@ def github(
         data_from=repositories,
         primary_key="id",
         write_disposition="merge",
-        parallelized=parallelized,
     )
     def repository_labels(repositories):
         """Transform and load GitHub repository labels data with checkpointing.
-
 
         Args:
             repositories: Iterator of repository data from GitHub API
@@ -97,7 +94,6 @@ def github(
         data_from=repositories,
         primary_key="sha",
         write_disposition="merge",
-        parallelized=parallelized,
     )
     def commits(repositories):
         """Transform and load GitHub commits data with checkpointing.
@@ -161,7 +157,6 @@ def github(
         data_from=repositories,
         primary_key="id",
         write_disposition="merge",
-        parallelized=parallelized,
     )
     def workflow_runs(repositories):
         """Transform and load GitHub workflow runs data with checkpointing.
@@ -257,7 +252,6 @@ def github(
         data_from=workflow_runs,
         primary_key="id",
         write_disposition="merge",
-        parallelized=parallelized,
     )
     def workflow_jobs(workflow_runs):
         """Transform and load GitHub workflow jobs data with checkpointing.
@@ -297,7 +291,6 @@ def github(
         data_from=repositories,
         primary_key="id",
         write_disposition="merge",
-        parallelized=parallelized,
     )
     def pull_requests(repositories):
         """Transform and load GitHub pull requests data with checkpointing.
