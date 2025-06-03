@@ -154,6 +154,8 @@ def github(
     )
     def workflow_runs(repositories):
         """Transform and load GitHub workflow runs data with checkpointing.
+        Handles GitHub's 1000 results per query limit by fetching all pages
+        before updating the time window.
 
         Args:
             repositories: Iterator of repository data from GitHub API
@@ -181,25 +183,51 @@ def github(
                     checkpoint = stored_checkpoint
                 latest_run_date = None
 
-                # Get paginated workflow runs with cursor-based navigation
-                pages = client.paginate(
-                    path=f"/repos/{repo_full_name}/actions/runs",
-                    params={
-                        "per_page": 100,
-                        "created": f">={checkpoint}",
-                    },
-                    data_selector="workflow_runs",
-                )
+                while True:
+                    in_limit = True
+                    oldest_run_date = None
 
-                for page in pages:
-                    if not page:
+                    # Get paginated workflow runs with cursor-based navigation
+                    pages = client.paginate(
+                        path=f"/repos/{repo_full_name}/actions/runs",
+                        params={
+                            "per_page": 100,
+                            "created": f">={checkpoint}",
+                        },
+                        data_selector="workflow_runs",
+                    )
+
+                    # Process all pages for current time window
+                    for idx, page in enumerate(pages):
+                        if not page:
+                            break
+
+                        # Track most recent run date from first result
+                        if latest_run_date is None and page:
+                            latest_run_date = page[0]["created_at"]
+
+                        # Track oldest run date from last result
+                        if page:
+                            oldest_run_date = page[-1]["created_at"]
+
+                        yield page
+
+                        # Set in_limit to False if we have reached the 1000 results limit
+                        if idx >= 9:
+                            in_limit = False
+
+                    # Break conditions:
+                    # 1. No results in this window
+                    # 2. In limit and no more pages to fetch
+                    if not page or in_limit:
                         break
 
-                    yield page
-
-                    # Track most recent run date from first result
-                    if latest_run_date is None and page:
-                        latest_run_date = page[0]["created_at"]
+                    # Update cursor to oldest run date for next iteration
+                    if oldest_run_date:
+                        cursor = oldest_run_date
+                        logger.debug(
+                            f"Updating cursor to {cursor} for {repo_full_name}"
+                        )
 
                 # Update checkpoint after all pages are processed
                 if latest_run_date:
@@ -234,6 +262,7 @@ def github(
                 pages = client.paginate(
                     path=f"/repos/{repo_full_name}/actions/runs/{workflow_run_id}/jobs",
                     params={
+                        "filter": "all",
                         "per_page": 100,
                     },
                     data_selector="jobs",
