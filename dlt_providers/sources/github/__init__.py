@@ -377,7 +377,6 @@ def github(
         repository_labels,
         commits,
         workflow_runs,
-        # TODO: Add workflow_jobs
-        # workflow_jobs,
+        workflow_jobs,
         pull_requests,
     ]
