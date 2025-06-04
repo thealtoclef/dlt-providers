@@ -1,5 +1,4 @@
 import base64
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from typing import Iterable, Literal, Optional
 
@@ -29,8 +28,6 @@ def github(
     gha_private_key_base64: Optional[str] = dlt.secrets.value,
     start_date: str = DEFAULT_START_DATE,
     lookback_days: int = 1,
-    batch_size: int = 10,
-    max_workers: int = 5,
 ) -> Iterable[DltResource]:
     match auth_type:
         case "pat":
@@ -73,7 +70,9 @@ def github(
                 params={"per_page": 100, "sort": "updated", "direction": "desc"},
             )
         except Exception as e:
-            logger.error(f"Failed to process repositories: {str(e)}")
+            logger.error(
+                f"Failed to process repositories: {str(e)}"
+            )
 
     @dlt.transformer(
         data_from=repositories,
@@ -266,7 +265,7 @@ def github(
         write_disposition="merge",
     )
     def workflow_jobs(workflow_runs):
-        """Transform and load GitHub workflow jobs data with concurrent processing.
+        """Transform and load GitHub workflow jobs data with checkpointing.
 
         Args:
             workflow_runs: Iterator of workflow runs data from GitHub API
@@ -274,14 +273,11 @@ def github(
         Yields:
             Paginated workflow jobs data for each workflow run
         """
-
-        def fetch_workflow_run_jobs(workflow_run):
-            """Fetch jobs for a single workflow run."""
+        for workflow_run in workflow_runs:
             repo_full_name = workflow_run["repository"]["full_name"]
             workflow_run_id = workflow_run["id"]
 
             try:
-                jobs = []
                 pages = client.paginate(
                     path=f"/repos/{repo_full_name}/actions/runs/{workflow_run_id}/jobs",
                     params={
@@ -292,42 +288,15 @@ def github(
                 )
 
                 for page in pages:
-                    if page:
-                        jobs.extend(page)
+                    if not page:
+                        break
 
-                return jobs
-
+                    yield page
             except Exception as e:
                 logger.error(
-                    f"Failed to process workflow jobs for {repo_full_name}, run {workflow_run_id}: {str(e)}"
+                    f"Failed to process workflow jobs for {repo_full_name}: {str(e)}"
                 )
-                return []
-
-        workflow_runs_list = list(workflow_runs)
-        for i in range(0, len(workflow_runs_list), batch_size):
-            batch = workflow_runs_list[i : i + batch_size]
-
-            with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                # Submit all tasks for the current batch
-                future_to_workflow_run = {
-                    executor.submit(fetch_workflow_run_jobs, workflow_run): workflow_run
-                    for workflow_run in batch
-                }
-
-                # Process completed tasks as they finish
-                for future in as_completed(future_to_workflow_run):
-                    workflow_run = future_to_workflow_run[future]
-                    try:
-                        jobs = future.result()
-                        if jobs:
-                            for job in jobs:
-                                yield job
-                    except Exception as e:
-                        repo_full_name = workflow_run["repository"]["full_name"]
-                        workflow_run_id = workflow_run["id"]
-                        logger.error(
-                            f"Error processing workflow jobs for {repo_full_name}, run {workflow_run_id}: {str(e)}"
-                        )
+                continue
 
     @dlt.transformer(
         data_from=repositories,
@@ -408,6 +377,7 @@ def github(
         repository_labels,
         commits,
         workflow_runs,
-        workflow_jobs,
+        # TODO: Add workflow_jobs
+        # workflow_jobs,
         pull_requests,
     ]
