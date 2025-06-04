@@ -64,10 +64,15 @@ def github(
         Yields:
             Paginated repository data for the organization
         """
-        yield from client.paginate(
-            path=f"/orgs/{org}/repos",
-            params={"per_page": 100, "sort": "updated", "direction": "desc"},
-        )
+        try:
+            yield from client.paginate(
+                path=f"/orgs/{org}/repos",
+                params={"per_page": 100, "sort": "updated", "direction": "desc"},
+            )
+        except Exception as e:
+            logger.error(
+                f"Failed to process repositories: {str(e)}"
+            )
 
     @dlt.transformer(
         data_from=repositories,
@@ -85,10 +90,16 @@ def github(
         """
         for repository in repositories:
             repo_full_name = repository["full_name"]
-            yield from client.paginate(
-                path=f"/repos/{repo_full_name}/labels",
-                params={"per_page": 100},
-            )
+            try:
+                yield from client.paginate(
+                    path=f"/repos/{repo_full_name}/labels",
+                    params={"per_page": 100},
+                )
+            except Exception as e:
+                logger.error(
+                    f"Failed to process repository labels for {repo_full_name}: {str(e)}"
+                )
+                continue
 
     @dlt.transformer(
         data_from=repositories,
