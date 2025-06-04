@@ -64,105 +64,10 @@ def github(
         Yields:
             Paginated repository data for the organization
         """
-        try:
-            yield from client.paginate(
-                path=f"/orgs/{org}/repos",
-                params={"per_page": 100, "sort": "updated", "direction": "desc"},
-            )
-        except Exception as e:
-            logger.error(
-                f"Failed to process repositories: {str(e)}"
-            )
-
-    @dlt.transformer(
-        data_from=repositories,
-        primary_key="id",
-        write_disposition="merge",
-    )
-    def repository_labels(repositories):
-        """Transform and load GitHub repository labels data with checkpointing.
-
-        Args:
-            repositories: Iterator of repository data from GitHub API
-
-        Yields:
-            Paginated repository label data for each repository
-        """
-        for repository in repositories:
-            repo_full_name = repository["full_name"]
-            try:
-                yield from client.paginate(
-                    path=f"/repos/{repo_full_name}/labels",
-                    params={"per_page": 100},
-                )
-            except Exception as e:
-                logger.error(
-                    f"Failed to process repository labels for {repo_full_name}: {str(e)}"
-                )
-                continue
-
-    @dlt.transformer(
-        data_from=repositories,
-        primary_key="sha",
-        write_disposition="merge",
-    )
-    def commits(repositories):
-        """Transform and load GitHub commits data with checkpointing.
-
-        Args:
-            repositories: Iterator of repository data from GitHub API
-
-        Yields:
-            Paginated commit data for each repository
-        """
-        checkpoints = dlt.current.resource_state().setdefault("checkpoints", {})
-
-        for repository in repositories:
-            repo_full_name = repository["full_name"]
-            checkpoint_key = f"{repo_full_name}_commits"
-            try:
-                # Initialize checkpoint and tracking variables
-                stored_checkpoint = checkpoints.get(checkpoint_key, start_date)
-                if stored_checkpoint != start_date:
-                    checkpoint_date = datetime.fromisoformat(
-                        stored_checkpoint.replace("Z", "+00:00")
-                    )
-                    adjusted_checkpoint = checkpoint_date - timedelta(
-                        days=lookback_days
-                    )
-                    checkpoint = adjusted_checkpoint.isoformat()
-                else:
-                    checkpoint = stored_checkpoint
-
-                latest_commit_date = None
-
-                # Get paginated commits since adjusted checkpoint
-                pages = client.paginate(
-                    path=f"/repos/{repo_full_name}/commits",
-                    params={"per_page": 100, "since": checkpoint},
-                )
-
-                for page in pages:
-                    if not page:
-                        break
-
-                    # Track most recent commit date from first page
-                    if latest_commit_date is None:
-                        latest_commit_date = page[0]["commit"]["committer"]["date"]
-                    yield page
-
-                # Update checkpoint after successful processing
-                if latest_commit_date:
-                    checkpoints[checkpoint_key] = latest_commit_date
-                    logger.info(
-                        f"Updated commits checkpoint for {repo_full_name} to {latest_commit_date}"
-                    )
-
-            except Exception as e:
-                logger.error(
-                    f"Failed to process commits for {repo_full_name}: {str(e)}"
-                )
-                continue
+        yield from client.paginate(
+            path=f"/orgs/{org}/repos",
+            params={"per_page": 100, "sort": "updated", "direction": "desc"},
+        )
 
     @dlt.transformer(
         data_from=repositories,
@@ -374,8 +279,6 @@ def github(
 
     return [
         repositories,
-        repository_labels,
-        commits,
         workflow_runs,
         workflow_jobs,
         pull_requests,
