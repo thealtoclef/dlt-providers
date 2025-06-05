@@ -1,6 +1,7 @@
 import base64
 from datetime import datetime, timedelta
 from typing import Iterable, Literal, Optional
+import requests
 
 import dlt
 from dlt.common import logger
@@ -10,7 +11,7 @@ from dlt.sources.helpers.rest_client import RESTClient
 from dlt.sources.helpers.rest_client.auth import BearerTokenAuth
 from dlt.sources.helpers.rest_client.paginators import PageNumberPaginator
 
-from .helpers import GitHubAppAuth
+from .helpers import GitHubAppAuth, with_retry
 from .settings import (
     DEFAULT_START_DATE,
     REST_API_BASE_URL,
@@ -28,6 +29,10 @@ def github(
     gha_private_key_base64: Optional[str] = dlt.secrets.value,
     start_date: str = DEFAULT_START_DATE,
     lookback_days: int = 1,
+    max_retries: int = 3,
+    initial_delay: float = 1.0,
+    backoff_factor: float = 2.0,
+    max_delay: float = 60.0,
 ) -> Iterable[DltResource]:
     match auth_type:
         case "pat":
@@ -57,6 +62,19 @@ def github(
         ),
     )
 
+    # Create retry-enabled paginate function
+    retryable_paginate = with_retry(
+        max_retries=max_retries,
+        initial_delay=initial_delay,
+        backoff_factor=backoff_factor,
+        max_delay=max_delay,
+        retryable_exceptions=(
+            requests.exceptions.RequestException,
+            ConnectionError,
+            TimeoutError,
+        ),
+    )(client.paginate)
+
     @dlt.resource(write_disposition="merge", primary_key="id")
     def repositories():
         """Load GitHub repositories data.
@@ -64,7 +82,7 @@ def github(
         Yields:
             Paginated repository data for the organization
         """
-        yield from client.paginate(
+        yield from retryable_paginate(
             path=f"/orgs/{org}/repos",
             params={"per_page": 100, "sort": "updated", "direction": "desc"},
         )
@@ -109,8 +127,8 @@ def github(
                     in_limit = True
                     oldest_run_date = None
 
-                    # Get paginated workflow runs with cursor-based navigation
-                    pages = client.paginate(
+                    # Get paginated workflow runs with cursor-based navigation (with retry)
+                    pages = retryable_paginate(
                         path=f"/repos/{repo_full_name}/actions/runs",
                         params={
                             "per_page": 100,
@@ -183,7 +201,7 @@ def github(
             workflow_run_id = workflow_run["id"]
 
             try:
-                pages = client.paginate(
+                pages = retryable_paginate(
                     path=f"/repos/{repo_full_name}/actions/runs/{workflow_run_id}/jobs",
                     params={
                         "filter": "all",
@@ -238,8 +256,8 @@ def github(
 
                 latest_pr_date = None
 
-                # Get paginated pull requests since adjusted checkpoint
-                pages = client.paginate(
+                # Get paginated pull requests since adjusted checkpoint (with retry)
+                pages = retryable_paginate(
                     path=f"/repos/{repo_full_name}/pulls",
                     params={
                         "per_page": 100,
