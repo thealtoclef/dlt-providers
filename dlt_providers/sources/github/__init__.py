@@ -92,6 +92,68 @@ def github(
         primary_key="id",
         write_disposition="merge",
     )
+    def commits(repositories):
+        """Transform and load GitHub commits data with checkpointing.
+
+        Args:
+            repositories: Iterator of repository data from GitHub API
+
+        Yields:
+            Paginated commits data for each repository
+        """
+        checkpoints = dlt.current.resource_state().setdefault("checkpoints", {})
+
+        for repository in repositories:
+            repo_full_name = repository["full_name"]
+            checkpoint_key = f"{repo_full_name}_commits"
+            try:
+                # Initialize checkpoint and cursor
+                stored_checkpoint = checkpoints.get(checkpoint_key, start_date)
+                if stored_checkpoint != start_date:
+                    checkpoint_date = datetime.fromisoformat(
+                        stored_checkpoint.replace("Z", "+00:00")
+                    )
+                    adjusted_checkpoint = checkpoint_date - timedelta(
+                        days=lookback_days
+                    )
+                    checkpoint = adjusted_checkpoint.isoformat()
+                else:
+                    checkpoint = stored_checkpoint
+                latest_commit_date = None
+
+                pages = retryable_paginate(
+                    path=f"/repos/{repo_full_name}/commits",
+                    params={
+                        "per_page": 100,
+                        "since": checkpoint,
+                    },
+                )
+
+                for page in pages:
+                    if not page:
+                        break
+
+                    yield page
+
+                    if latest_commit_date is None:
+                        latest_commit_date = page[0]["commit"]["committer"]["date"]
+
+                if latest_commit_date:
+                    checkpoints[checkpoint_key] = latest_commit_date
+                    logger.info(
+                        f"Updated commits checkpoint for {repo_full_name} to {latest_commit_date}"
+                    )
+            except Exception as e:
+                logger.error(
+                    f"Failed to process commits for {repo_full_name}: {str(e)}"
+                )
+                continue
+
+    @dlt.transformer(
+        data_from=repositories,
+        primary_key="id",
+        write_disposition="merge",
+    )
     def workflow_runs(repositories):
         """Transform and load GitHub workflow runs data with checkpointing.
         Handles GitHub's 1000 results per query limit by fetching all pages
@@ -297,6 +359,7 @@ def github(
 
     return [
         repositories,
+        commits,
         workflow_runs,
         workflow_jobs,
         pull_requests,
