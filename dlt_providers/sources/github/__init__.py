@@ -183,6 +183,8 @@ def github(
                     checkpoint = adjusted_checkpoint.isoformat()
                 else:
                     checkpoint = stored_checkpoint
+
+                cursor = "*"
                 latest_run_date = None
 
                 while True:
@@ -194,7 +196,7 @@ def github(
                         path=f"/repos/{repo_full_name}/actions/runs",
                         params={
                             "per_page": 100,
-                            "created": f">={checkpoint}",
+                            "created": f"{checkpoint}..{cursor}",
                         },
                         data_selector="workflow_runs",
                     )
