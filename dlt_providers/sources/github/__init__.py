@@ -183,8 +183,6 @@ def github(
                     checkpoint = adjusted_checkpoint.isoformat()
                 else:
                     checkpoint = stored_checkpoint
-
-                cursor = "*"
                 latest_run_date = None
 
                 while True:
@@ -196,7 +194,7 @@ def github(
                         path=f"/repos/{repo_full_name}/actions/runs",
                         params={
                             "per_page": 100,
-                            "created": f"{checkpoint}..{cursor}",
+                            "created": f">={checkpoint}",
                         },
                         data_selector="workflow_runs",
                     )
@@ -227,10 +225,15 @@ def github(
                         break
 
                     # Update cursor to oldest run date for next iteration
-                    if oldest_run_date:
-                        cursor = oldest_run_date
+                    if not in_limit and oldest_run_date:
+                        checkpoint = (
+                            datetime.fromisoformat(
+                                oldest_run_date.replace("Z", "+00:00")
+                            )
+                            - timedelta(seconds=1)
+                        ).isoformat()
                         logger.debug(
-                            f"Updating cursor to {cursor} for {repo_full_name}"
+                            f"Adjusting checkpoint to {checkpoint} for deeper pagination"
                         )
 
                 # Update checkpoint after all pages are processed
