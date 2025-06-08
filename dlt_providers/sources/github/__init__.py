@@ -89,7 +89,7 @@ def github(
 
     @dlt.transformer(
         data_from=repositories,
-        primary_key="id",
+        primary_key="sha",
         write_disposition="merge",
     )
     def commits(repositories):
