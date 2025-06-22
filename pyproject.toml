@@ -4,12 +4,11 @@ dynamic = ["version"]
 description = "Providers for data load tool (dlt)"
 readme = "README.md"
 requires-python = ">=3.10"
-dependencies = [
-    "cryptography~=44.0.1",
-    "dlt~=1.11.0",
-    "pendulum~=3.0.0",
-    "pyjwt~=2.10.1",
-]
+dependencies = ["dlt~=1.12.1"]
+
+[project.optional-dependencies]
+pg_replication = ["psycopg2-binary>=2.9.10"]
+mysql_replication = ["mysql-replication>=1.0.9"]
 
 [build-system]
 requires = ["hatchling", "uv-dynamic-versioning"]
