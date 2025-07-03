@@ -104,11 +104,10 @@ def _to_dlt_column_type(type_id: int, atttypmod: int) -> TColumnType:
 def _to_dlt_column_schema(col: ColumnType) -> TColumnSchema:
     """Converts pypgoutput ColumnType to dlt column schema."""
     dlt_column_type = _to_dlt_column_type(col.type_id, col.atttypmod)
-    partial_column_schema = {
+    return {
+        **dlt_column_type,
         "name": col.name,
-        "primary_key": bool(col.part_of_pkey),
     }
-    return {**dlt_column_type, **partial_column_schema}  # type: ignore[typeddict-item]
 
 
 def _to_dlt_val(val: str, data_type: TDataType, byte1: str, for_delete: bool) -> Any:

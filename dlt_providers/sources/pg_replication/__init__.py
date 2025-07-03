@@ -1,106 +1,131 @@
-"""Replicates postgres tables in batch using logical decoding."""
-
-from typing import Dict, Sequence, Optional, Iterable, Union
+from typing import Dict, List, Literal, Optional, Sequence, Union
 
 import dlt
-
-from dlt.common import logger
-from dlt.common.typing import TDataItem
 from dlt.common.schema.typing import TTableSchemaColumns
-from dlt.extract.items import DataItemWithMeta
+from dlt.extract import DltSource
 from dlt.sources.credentials import ConnectionStringCredentials
 
-from .helpers import advance_slot, get_max_lsn, ItemGenerator
+from .helpers import init_replication, replication_resource
 
 
-@dlt.resource(
-    name=lambda args: args["slot_name"],
-    standalone=True,
-)
-def replication_resource(
-    slot_name: str,
-    pub_name: str,
+@dlt.source
+def pg_replication(
+    slot_name: str = dlt.config.value,
+    pub_name: str = dlt.config.value,
+    schema_name: str = dlt.config.value,
+    table_names: Optional[Union[str, Sequence[str]]] = dlt.config.value,
     credentials: ConnectionStringCredentials = dlt.secrets.value,
     include_columns: Optional[Dict[str, Sequence[str]]] = None,
     columns: Optional[Dict[str, TTableSchemaColumns]] = None,
+    reset: bool = False,
+    include_tables: Optional[Union[str, List[str]]] = None,
+    exclude_tables: Optional[Union[str, List[str]]] = None,
+    initial_snapshots: bool = True,
     target_batch_size: int = 1000,
     flush_slot: bool = True,
-) -> Iterable[Union[TDataItem, DataItemWithMeta]]:
-    """Resource yielding data items for changes in one or more postgres tables.
+    write_mode: Literal["merge", "append-only"] = "merge",
+) -> DltSource:
+    """PostgreSQL replication source with initial snapshots and ongoing replication.
 
-    - Relies on a replication slot and publication that publishes DML operations
-    (i.e. `insert`, `update`, and/or `delete`). Helper `init_replication` can be
-    used to set this up.
-    - Maintains LSN of last consumed message in state to track progress.
-    - At start of the run, advances the slot upto last consumed message in previous run.
-    - Processes in batches to limit memory usage.
+    This unified source combines initial table snapshots (using connectorx for read-only access)
+    with ongoing logical replication. It automatically sets up replication slots and publications.
 
     Args:
-        slot_name (str): Name of the replication slot to consume replication messages from.
-        pub_name (str): Name of the publication that publishes DML operations for the table(s).
+        slot_name (str): Name of the replication slot to be created.
+        pub_name (str): Name of the publication to be created.
+        schema_name (str): Postgres schema name.
+        table_names (Optional[Union[str, Sequence[str]]]): Table name(s) to be
+          added to the publication. If not provided, all tables in the schema
+          are added.
         credentials (ConnectionStringCredentials): Postgres database credentials.
         include_columns (Optional[Dict[str, Sequence[str]]]): Maps table name(s) to
-          sequence of names of columns to include in the generated data items.
+          sequence of names of columns to include in the snapshot table(s).
           Any column not in the sequence is excluded. If not provided, all columns
-          are included. For example:
-          ```
-          include_columns={
-              "table_x": ["col_a", "col_c"],
-              "table_y": ["col_x", "col_y", "col_z"],
-          }
-          ```
-        columns (Optional[Dict[str, TTableHintTemplate[TAnySchemaColumns]]]): Maps
-          table name(s) to column hints to apply on the replicated table(s). For example:
-          ```
-          columns={
-              "table_x": {"col_a": {"data_type": "json"}},
-              "table_y": {"col_y": {"precision": 32}},
-          }
-          ```
-        target_batch_size (int): Desired number of data items yielded in a batch.
-          Can be used to limit the data items in memory. Note that the number of
-          data items yielded can be (far) greater than `target_batch_size`, because
-          all messages belonging to the same transaction are always processed in
-          the same batch, regardless of the number of messages in the transaction
-          and regardless of the value of `target_batch_size`. The number of data
-          items can also be smaller than `target_batch_size` when the replication
-          slot is exhausted before a batch is full.
-        flush_slot (bool): Whether processed messages are discarded from the replication
-          slot. Recommended value is True. Be careful when setting False—not flushing
-          can eventually lead to a “disk full” condition on the server, because
-          the server retains all the WAL segments that might be needed to stream
-          the changes via all of the currently open replication slots.
+          are included.
+        columns (Optional[Dict[str, TTableSchemaColumns]]): Maps
+          table name(s) to column hints to apply on the snapshot table resource(s).
+        reset (bool): If set to True, the existing slot and publication are dropped
+          and recreated. Has no effect if a slot and publication with the provided
+          names do not yet exist.
+        include_tables (Optional[Union[str, List[str]]]): Glob patterns for tables to include.
+          Can be used to filter tables even when not controlling publication creation.
+        exclude_tables (Optional[Union[str, List[str]]]): Glob patterns for tables to exclude.
+          Can be used to filter tables even when not controlling publication creation.
+        initial_snapshots (bool): Whether to create read-only initial snapshot resources
+          using connectorx backend.
+        target_batch_size (int): Desired number of data items yielded in a batch for replication.
+        flush_slot (bool): Whether processed messages are discarded from the replication slot.
+        write_mode (Literal["merge", "append-only"]): Write mode for data processing.
+            - "merge": Default mode. Consolidates changes with existing data, creating final tables
+              that are replicas of source tables. No historical record of change events is kept.
+            - "append-only": Adds data as a stream of changes (INSERT, UPDATE-INSERT, UPDATE-DELETE,
+              DELETE events). Retains historical state of data with all change events preserved.
 
-        Yields:
-            Data items for changes published in the publication.
-    """
-    # start where we left off in previous run
-    start_lsn = dlt.current.resource_state().get("last_commit_lsn", 0)
-    if flush_slot and start_lsn:
-        advance_slot(start_lsn, slot_name, credentials)
+    Returns:
+        DltSource: A dlt source containing both snapshot and replication resources.
 
-    # continue until last message in replication slot
-    options = {"publication_names": pub_name, "proto_version": "1"}
-    upto_lsn = get_max_lsn(slot_name, options, credentials)
-    if upto_lsn is None:
-        return
-    logger.info(
-        f"Replicating slot {slot_name} publication {pub_name} from {start_lsn} to {upto_lsn}"
-    )
-    # generate items in batches
-    while True:
-        gen = ItemGenerator(
-            credentials=credentials,
-            slot_name=slot_name,
-            options=options,
-            upto_lsn=upto_lsn,
-            start_lsn=start_lsn,
-            target_batch_size=target_batch_size,
-            include_columns=include_columns,
-            columns=columns,
+    Example:
+        ```python
+        import dlt
+        from dlt_providers.sources.pg_replication import pg_replication
+
+        # Basic usage
+        source = pg_replication(
+            slot_name="my_slot",
+            pub_name="my_publication",
+            schema_name="public",
+            credentials="postgresql://user:pass@localhost/db"
         )
-        yield from gen
-        if gen.generated_all:
-            dlt.current.resource_state()["last_commit_lsn"] = gen.last_commit_lsn
-            break
-        start_lsn = gen.last_commit_lsn
+
+        # With table filtering
+        source = pg_replication(
+            slot_name="my_slot",
+            pub_name="my_publication",
+            schema_name="public",
+            include_tables=["users", "orders*"],
+            exclude_tables=["*_temp"],
+            credentials="postgresql://user:pass@localhost/db"
+        )
+
+        # Load the data
+        pipeline = dlt.pipeline("pg_repl", destination="duckdb")
+        pipeline.run(source)
+        ```
+    """
+    # Initialize replication and get snapshot resources
+    snapshot_resources = init_replication(
+        slot_name=slot_name,
+        pub_name=pub_name,
+        schema_name=schema_name,
+        table_names=table_names,
+        credentials=credentials,
+        include_columns=include_columns,
+        columns=columns,
+        reset=reset,
+        include_tables=include_tables,
+        exclude_tables=exclude_tables,
+        initial_snapshots=initial_snapshots,
+    )
+
+    # Create replication resource
+    replication_res = replication_resource(
+        slot_name=slot_name,
+        pub_name=pub_name,
+        credentials=credentials,
+        include_columns=include_columns,
+        columns=columns,
+        target_batch_size=target_batch_size,
+        flush_slot=flush_slot,
+        write_mode=write_mode,
+    )
+
+    # Combine resources
+    resources = []
+    if snapshot_resources:
+        if isinstance(snapshot_resources, list):
+            resources.extend(snapshot_resources)
+        else:
+            resources.append(snapshot_resources)
+    resources.append(replication_res)
+
+    return resources
