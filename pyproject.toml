@@ -1,6 +1,6 @@
 [project]
 name = "dlt-providers"
-dynamic = ["version"]
+version = "0.0.0"
 description = "Providers for data load tool (dlt)"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -14,14 +14,5 @@ mysql_replication = ["mysql-replication==0.46.0", "cryptography==45.0.4"]
 dev = ["dlt[duckdb]", "pydantic", "docker", "pandas", "numpy"]
 
 [build-system]
-requires = ["hatchling", "uv-dynamic-versioning"]
-build-backend = "hatchling.build"
-
-[tool.hatch.build.targets.wheel]
-packages = ["dlt_providers"]
-
-[tool.hatch.version]
-source = "uv-dynamic-versioning"
-
-[tool.uv-dynamic-versioning]
-pattern = "default-unprefixed"
+requires = ["uv_build>=0.7.19,<0.8.0"]
+build-backend = "uv_build"
