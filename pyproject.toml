@@ -7,8 +7,19 @@ requires-python = ">=3.10"
 dependencies = ["dlt~=1.12.1"]
 
 [project.optional-dependencies]
-pg_replication = ["psycopg2-binary>=2.9.10"]
-mysql_replication = ["mysql-replication>=1.0.9"]
+pg_replication = ["psycopg2-binary==2.9.10"]
+mysql_replication = ["mysql-replication==0.46.0", "cryptography==45.0.4"]
+
+[dependency-groups]
+dev = [
+    "dlt[duckdb]",
+    "connectorx",
+    "pyarrow",
+    "pydantic",
+    "docker",
+    "pandas",
+    "numpy",
+]
 
 [build-system]
 requires = ["hatchling", "uv-dynamic-versioning"]
