@@ -5,7 +5,7 @@ import psycopg2
 from dlt.sources.credentials import ConnectionStringCredentials
 
 from dlt_providers.sources.pg_replication import pg_replication
-from tests.base_dlt_e2e import DltE2eTest
+from base_dlt_e2e import DltE2eTest
 
 
 class PostgreSQLReplicationE2eTest(DltE2eTest):

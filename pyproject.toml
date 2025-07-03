@@ -8,7 +8,11 @@ dependencies = ["dlt==1.12.3", "connectorx==0.4.3", "pyarrow==20.0.0"]
 
 [project.optional-dependencies]
 pg_replication = ["psycopg2-binary==2.9.10"]
-mysql_replication = ["mysql-replication==0.46.0", "cryptography==45.0.4"]
+mysql_replication = [
+    "mysql-replication==0.46.0",
+    "cryptography==45.0.4",
+    "plpygis==0.5.5",
+]
 
 [dependency-groups]
 dev = ["dlt[duckdb]", "pydantic", "docker", "pandas", "numpy"]
