@@ -285,7 +285,9 @@ duckdb = [
 name = "dlt-providers"
 source = { editable = "." }
 dependencies = [
+    { name = "connectorx" },
     { name = "dlt" },
+    { name = "pyarrow" },
 ]
 
 [package.optional-dependencies]
@@ -299,33 +301,31 @@ pg-replication = [
 
 [package.dev-dependencies]
 dev = [
-    { name = "connectorx" },
     { name = "dlt", extra = ["duckdb"] },
     { name = "docker" },
     { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "numpy", version = "2.3.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "pandas" },
-    { name = "pyarrow" },
     { name = "pydantic" },
 ]
 
 [package.metadata]
 requires-dist = [
+    { name = "connectorx", specifier = "==0.4.3" },
     { name = "cryptography", marker = "extra == 'mysql-replication'", specifier = "==45.0.4" },
-    { name = "dlt", specifier = "~=1.12.1" },
+    { name = "dlt", specifier = "==1.12.3" },
     { name = "mysql-replication", marker = "extra == 'mysql-replication'", specifier = "==0.46.0" },
     { name = "psycopg2-binary", marker = "extra == 'pg-replication'", specifier = "==2.9.10" },
+    { name = "pyarrow", specifier = "==20.0.0" },
 ]
 provides-extras = ["mysql-replication", "pg-replication"]
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "connectorx" },
     { name = "dlt", extras = ["duckdb"] },
     { name = "docker" },
     { name = "numpy" },
     { name = "pandas" },
-    { name = "pyarrow" },
     { name = "pydantic" },
 ]
 
