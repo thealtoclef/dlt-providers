@@ -51,6 +51,7 @@ from .decoders import (
     Relation,
     Update,
 )
+from .exceptions import PublicationNotFoundError
 from .schema_types import _to_dlt_column_schema, _to_dlt_val
 
 
@@ -61,7 +62,7 @@ from .schema_types import _to_dlt_column_schema, _to_dlt_val
 )
 def init_replication(
     slot_name: str = dlt.config.value,
-    pub_name: str = dlt.config.value,
+    publication_name: str = dlt.config.value,
     schema_name: str = dlt.config.value,
     table_names: Optional[Union[str, Sequence[str]]] = dlt.config.value,
     credentials: ConnectionStringCredentials = dlt.secrets.value,
@@ -71,6 +72,7 @@ def init_replication(
     include_tables: Optional[Union[str, List[str]]] = None,
     exclude_tables: Optional[Union[str, List[str]]] = None,
     initial_snapshots: bool = True,
+    publication_autocreate: bool = True,
 ) -> Optional[Union[DltResource, List[DltResource]]]:
     """Initializes logical replication on the given slot and publication.
 
@@ -79,7 +81,7 @@ def init_replication(
 
     Args:
         slot_name (str): Name of the replication slot to be created.
-        pub_name (str): Name of the publication to be created.
+        publication_name (str): Name of the publication to be created.
         schema_name (str): Postgres schema name.
         table_names (Optional[Union[str, Sequence[str]]]): Table name(s) to be
           added to the publication. If not provided, all tables in the schema
@@ -137,7 +139,7 @@ def init_replication(
         with rep_conn.cursor() as cur:
             if reset:
                 drop_replication_slot(slot_name, cur)
-                drop_publication(pub_name, cur)
+                drop_publication(publication_name, cur)
                 # Clear snapshot completion state to force re-snapshot
                 # Note: We clear state for all tables in this schema/publication
                 source_state = dlt.current.source_state()
@@ -152,8 +154,21 @@ def init_replication(
                         f"Cleared {len(keys_to_delete)} snapshot completion states for schema {schema_name}"
                     )
 
-            # Create publication at database level if it doesn't exist
-            create_publication(pub_name, cur)
+            # Check if publication exists and get its tables
+            publication_tables = None
+            try:
+                publication_tables = get_publication_tables(publication_name, cur)
+            except PublicationNotFoundError:
+                if publication_autocreate:
+                    logger.info(
+                        f"Creating publication '{publication_name}' as it doesn't exist"
+                    )
+                    create_publication(publication_name, cur)
+                else:
+                    raise ValueError(
+                        f"Publication '{publication_name}' does not exist and publication_autocreate is False. "
+                        "Please create the publication manually or set publication_autocreate=True."
+                    )
 
             # Determine which tables to include
             if table_names is None:
@@ -175,10 +190,22 @@ def init_replication(
                 )
                 return None
 
-            # Check that publication includes the needed tables
-            check_publication_includes_tables(
-                pub_name, table_names_only, schema_name, cur
-            )
+            # Verify that publication includes the needed tables
+            if table_names_only and publication_tables is not None:
+                qualified_table_names = [
+                    f"{schema_name}.{table}" for table in table_names_only
+                ]
+                missing_tables = [
+                    table
+                    for table in qualified_table_names
+                    if table not in publication_tables
+                ]
+
+                if missing_tables:
+                    raise ValueError(
+                        f"Publication '{publication_name}' is missing required tables: {missing_tables}. "
+                        "Please ensure the publication includes these tables before proceeding."
+                    )
 
             # Create replication slot if it doesn't exist
             create_replication_slot(slot_name, cur)
@@ -235,32 +262,6 @@ def create_publication(
         )
     except psycopg2.errors.DuplicateObject:  # the publication already exists
         logger.info(f'Publication "{name}" already exists.')
-
-
-def check_publication_includes_tables(
-    pub_name: str,
-    table_names: List[str],
-    schema_name: str,
-    cur: cursor,
-) -> None:
-    """Checks that the publication includes the specified tables.
-
-    Raises an error if the publication is missing any required tables.
-    """
-    current_tables = get_publication_tables(pub_name, cur)
-    qualified_table_names = [f"{schema_name}.{table}" for table in table_names]
-
-    missing_tables = [
-        table for table in qualified_table_names if table not in current_tables
-    ]
-
-    if missing_tables:
-        raise ValueError(
-            f"Publication '{pub_name}' is missing required tables: {missing_tables}. "
-            f"Please ensure the publication includes these tables before proceeding."
-        )
-
-    logger.info(f"Publication {pub_name} includes all required tables.")
 
 
 def create_replication_slot(  # type: ignore[return]
@@ -574,25 +575,32 @@ def _get_pk(
 
 
 def get_publication_tables(
-    pub_name: str,
+    publication_name: str,
     cur: cursor,
 ) -> List[str]:
     """Returns list of tables in a publication.
 
     Args:
-        pub_name: Name of the publication
+        publication_name: Name of the publication
         cur: Database cursor
 
     Returns:
-        List of table names in the publication
+        List of table names in the publication, or None if the publication doesn't exist
     """
+    # First check if publication exists
+    cur.execute("SELECT 1 FROM pg_publication WHERE pubname = %s", (publication_name,))
+    if cur.fetchone() is None:
+        raise PublicationNotFoundError(
+            f"Publication {publication_name} does not exist."
+        )
+
     query = """
         SELECT schemaname, tablename
         FROM pg_publication_tables
         WHERE pubname = %s
         ORDER BY schemaname, tablename;
     """
-    cur.execute(query, (pub_name,))
+    cur.execute(query, (publication_name,))
     result = cur.fetchall()
     return [f"{row[0]}.{row[1]}" for row in result]
 
@@ -656,26 +664,27 @@ def filter_tables(
 )
 def replication_resource(
     slot_name: str,
-    pub_name: str,
+    publication_name: str,
     credentials: ConnectionStringCredentials = dlt.secrets.value,
     include_columns: Optional[Dict[str, Sequence[str]]] = None,
     columns: Optional[Dict[str, TTableSchemaColumns]] = None,
     target_batch_size: int = 1000,
-    flush_slot: bool = True,
     write_mode: Literal["merge", "append-only"] = "merge",
+    flush_slot: bool = True,
 ) -> Iterable[Union[TDataItem, DataItemWithMeta]]:
     """Resource yielding data items for changes in one or more postgres tables.
 
     - Relies on a replication slot and publication that publishes DML operations
     (i.e. `insert`, `update`, and/or `delete`). Helper `init_replication` can be
-    used to set this up.
+    used to set this up. The publication can be automatically created if `publication_autocreate`
+    is set to True in the main `pg_replication` function.
     - Maintains LSN of last consumed message in state to track progress.
     - At start of the run, advances the slot upto last consumed message in previous run.
     - Processes in batches to limit memory usage.
 
     Args:
         slot_name (str): Name of the replication slot to consume replication messages from.
-        pub_name (str): Name of the publication that publishes DML operations for the table(s).
+        publication_name (str): Name of the publication that publishes DML operations for the table(s).
         credentials (ConnectionStringCredentials): Postgres database credentials.
         include_columns (Optional[Dict[str, Sequence[str]]]): Maps table name(s) to
           sequence of names of columns to include in the generated data items.
@@ -703,16 +712,16 @@ def replication_resource(
           and regardless of the value of `target_batch_size`. The number of data
           items can also be smaller than `target_batch_size` when the replication
           slot is exhausted before a batch is full.
-        flush_slot (bool): Whether processed messages are discarded from the replication
-          slot. Recommended value is True. Be careful when setting False—not flushing
-          can eventually lead to a "disk full" condition on the server, because
-          the server retains all the WAL segments that might be needed to stream
-          the changes via all of the currently open replication slots.
         write_mode (Literal["merge", "append-only"]): Write mode for data processing.
           - "merge": Default mode. Consolidates changes with existing data, creating final tables
             that are replicas of source tables. No historical record of change events is kept.
           - "append-only": Adds data as a stream of changes (INSERT, UPDATE-INSERT, UPDATE-DELETE,
             DELETE events). Retains historical state of data with all change events preserved.
+        flush_slot (bool): Whether processed messages are discarded from the replication
+          slot. Recommended value is True. Be careful when setting False—not flushing
+          can eventually lead to a "disk full" condition on the server, because
+          the server retains all the WAL segments that might be needed to stream
+          the changes via all of the currently open replication slots.
 
         Yields:
             Data items for changes published in the publication.
@@ -724,12 +733,12 @@ def replication_resource(
         advance_slot(start_lsn, slot_name, credentials)
 
     # continue until last message in replication slot
-    options = {"publication_names": pub_name, "proto_version": "1"}
+    options = {"publication_names": publication_name, "proto_version": "1"}
     end_lsn = get_max_lsn(slot_name, options, credentials)
     if end_lsn is None:
         return
     logger.info(
-        f"Replicating slot {slot_name} publication {pub_name} from {start_lsn} to {end_lsn}"
+        f"Replicating slot {slot_name} publication {publication_name} from {start_lsn} to {end_lsn}"
     )
     # generate items in batches
     while True:

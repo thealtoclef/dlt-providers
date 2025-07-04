@@ -2,10 +2,10 @@ import time
 
 import dlt
 import psycopg2
+from base_dlt_e2e import DltE2eTest
 from dlt.sources.credentials import ConnectionStringCredentials
 
 from dlt_providers.sources.pg_replication import pg_replication
-from base_dlt_e2e import DltE2eTest
 
 
 class PostgreSQLReplicationE2eTest(DltE2eTest):
@@ -16,7 +16,7 @@ class PostgreSQLReplicationE2eTest(DltE2eTest):
         "postgresql://postgres:postgres@localhost:5432/postgres"
     )
     slot_name: str = "my_replication_slot"
-    pub_name: str = "my_publication"
+    publication_name: str = "my_publication"
     schema_name: str = "inventory"
     test_table: str = "customers"
 
@@ -267,7 +267,7 @@ class PostgreSQLReplicationE2eTest(DltE2eTest):
             source_kwargs = {
                 "credentials": self.postgres_credentials,
                 "slot_name": self.slot_name,
-                "pub_name": self.pub_name,
+                "publication_name": self.publication_name,
                 "schema_name": self.schema_name,
             }
             if write_mode:

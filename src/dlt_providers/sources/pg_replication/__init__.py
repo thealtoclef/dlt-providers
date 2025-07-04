@@ -11,7 +11,7 @@ from .helpers import init_replication, replication_resource
 @dlt.source
 def pg_replication(
     slot_name: str = dlt.config.value,
-    pub_name: str = dlt.config.value,
+    publication_name: str = dlt.config.value,
     schema_name: str = dlt.config.value,
     table_names: Optional[Union[str, Sequence[str]]] = dlt.config.value,
     credentials: ConnectionStringCredentials = dlt.secrets.value,
@@ -22,8 +22,9 @@ def pg_replication(
     exclude_tables: Optional[Union[str, List[str]]] = None,
     initial_snapshots: bool = True,
     target_batch_size: int = 1000,
-    flush_slot: bool = True,
     write_mode: Literal["merge", "append-only"] = "merge",
+    flush_slot: bool = True,
+    publication_autocreate: bool = True,
 ) -> DltSource:
     """PostgreSQL replication source with initial snapshots and ongoing replication.
 
@@ -32,7 +33,7 @@ def pg_replication(
 
     Args:
         slot_name (str): Name of the replication slot to be created.
-        pub_name (str): Name of the publication to be created.
+        publication_name (str): Name of the publication to be used or created.
         schema_name (str): Postgres schema name.
         table_names (Optional[Union[str, Sequence[str]]]): Table name(s) to be
           added to the publication. If not provided, all tables in the schema
@@ -54,12 +55,14 @@ def pg_replication(
         initial_snapshots (bool): Whether to create read-only initial snapshot resources
           using connectorx backend.
         target_batch_size (int): Desired number of data items yielded in a batch for replication.
-        flush_slot (bool): Whether processed messages are discarded from the replication slot.
         write_mode (Literal["merge", "append-only"]): Write mode for data processing.
             - "merge": Default mode. Consolidates changes with existing data, creating final tables
               that are replicas of source tables. No historical record of change events is kept.
             - "append-only": Adds data as a stream of changes (INSERT, UPDATE-INSERT, UPDATE-DELETE,
               DELETE events). Retains historical state of data with all change events preserved.
+        flush_slot (bool): Whether processed messages are discarded from the replication slot.
+        publication_autocreate (bool): If True (default), automatically creates the publication if it doesn't exist.
+          If False, uses the publication as-is without checking or creating it (will fail if publication doesn't exist).
 
     Returns:
         DltSource: A dlt source containing both snapshot and replication resources.
@@ -72,7 +75,7 @@ def pg_replication(
         # Basic usage
         source = pg_replication(
             slot_name="my_slot",
-            pub_name="my_publication",
+            publication_name="my_publication",
             schema_name="public",
             credentials="postgresql://user:pass@localhost/db"
         )
@@ -80,7 +83,7 @@ def pg_replication(
         # With table filtering
         source = pg_replication(
             slot_name="my_slot",
-            pub_name="my_publication",
+            publication_name="my_publication",
             schema_name="public",
             include_tables=["users", "orders*"],
             exclude_tables=["*_temp"],
@@ -95,9 +98,10 @@ def pg_replication(
     # Initialize replication and get snapshot resources
     snapshot_resources = init_replication(
         slot_name=slot_name,
-        pub_name=pub_name,
+        publication_name=publication_name,
         schema_name=schema_name,
         table_names=table_names,
+        publication_autocreate=publication_autocreate,
         credentials=credentials,
         include_columns=include_columns,
         columns=columns,
@@ -110,7 +114,7 @@ def pg_replication(
     # Create replication resource
     replication_res = replication_resource(
         slot_name=slot_name,
-        pub_name=pub_name,
+        publication_name=publication_name,
         credentials=credentials,
         include_columns=include_columns,
         columns=columns,
