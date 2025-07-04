@@ -2,10 +2,10 @@ import time
 
 import dlt
 import pymysql
+from base_dlt_e2e import DltE2eTest
 from dlt.sources.credentials import ConnectionStringCredentials
 
 from dlt_providers.sources.mysql_replication import mysql_replication
-from base_dlt_e2e import DltE2eTest
 
 
 class MySQLReplicationE2eTest(DltE2eTest):

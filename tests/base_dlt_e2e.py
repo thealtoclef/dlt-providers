@@ -8,7 +8,7 @@ from typing import Any, Dict, Optional
 import dlt
 import docker
 import duckdb
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, field_validator
 
 # ============================================================================
 # UTILITIES
@@ -85,7 +85,7 @@ class DltE2eTest(BaseModel, ABC):
     class Config:
         arbitrary_types_allowed = True
 
-    @validator("docker_config")
+    @field_validator("docker_config")
     def validate_docker_config(cls, v):
         if not v:
             raise ValueError("docker_config cannot be empty")
@@ -95,7 +95,7 @@ class DltE2eTest(BaseModel, ABC):
             raise ValueError("Docker config must have an 'image' field")
         return v
 
-    @validator("test_name")
+    @field_validator("test_name")
     def validate_test_name(cls, v):
         if not v or not v.strip():
             raise ValueError("test_name cannot be empty")
