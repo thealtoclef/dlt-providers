@@ -12,7 +12,6 @@ from .helpers import init_replication, replication_resource
 def mysql_replication(
     server_id: int = dlt.config.value,
     schema_name: str = dlt.config.value,
-    table_names: Optional[Union[str, Sequence[str]]] = dlt.config.value,
     credentials: ConnectionStringCredentials = dlt.secrets.value,
     include_columns: Optional[Dict[str, Sequence[str]]] = None,
     columns: Optional[Dict[str, TTableSchemaColumns]] = None,
@@ -32,8 +31,6 @@ def mysql_replication(
     Args:
         server_id (int): Unique server ID for MySQL replication connection.
         schema_name (str): MySQL database/schema name.
-        table_names (Optional[Union[str, Sequence[str]]]): Table name(s) to be
-          replicated. If not provided, all tables in the schema are included.
         credentials (ConnectionStringCredentials): MySQL database credentials.
         include_columns (Optional[Dict[str, Sequence[str]]]): Maps table name(s) to
           sequence of names of columns to include in the snapshot table(s).
@@ -45,9 +42,9 @@ def mysql_replication(
           and replication starts from the beginning. Has no effect if no previous
           state exists.
         include_tables (Optional[Union[str, List[str]]]): Glob patterns for tables to include.
-          Can be used to filter tables even when not controlling replication setup.
+          If not provided, all tables in the schema are included.
         exclude_tables (Optional[Union[str, List[str]]]): Glob patterns for tables to exclude.
-          Can be used to filter tables even when not controlling replication setup.
+          These patterns are applied after include_tables.
         initial_snapshots (bool): Whether to create read-only initial snapshot resources
           using connectorx backend.
         target_batch_size (int): Desired number of data items yielded in a batch for replication.
@@ -86,14 +83,9 @@ def mysql_replication(
         pipeline.run(source)
         ```
     """
-    # Determine which tables to include
-    if isinstance(table_names, str):
-        table_names = [table_names]
-
     # Initialize replication and get snapshot resources if requested
     snapshot_resources = init_replication(
         schema_name=schema_name,
-        table_names=table_names,
         credentials=credentials,
         include_columns=include_columns,
         columns=columns,
@@ -107,7 +99,6 @@ def mysql_replication(
     replication_res = replication_resource(
         server_id=server_id,
         schema_name=schema_name,
-        table_names=table_names,
         credentials=credentials,
         include_columns=include_columns,
         columns=columns,

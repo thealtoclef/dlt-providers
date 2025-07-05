@@ -60,7 +60,6 @@ from .schema_types import _to_dlt_column_schema, _to_dlt_val
 )
 def init_replication(
     schema_name: str,
-    table_names: Optional[Union[str, Sequence[str]]] = dlt.config.value,
     credentials: ConnectionStringCredentials = dlt.secrets.value,
     include_columns: Optional[Dict[str, Sequence[str]]] = None,
     columns: Optional[Dict[str, TTableSchemaColumns]] = None,
@@ -78,9 +77,6 @@ def init_replication(
     Args:
         server_id (int): MySQL server ID for replication.
         schema_name (str): MySQL database/schema name.
-        table_names (Optional[Union[str, Sequence[str]]]): Table name(s) to be
-          included in snapshots. If not provided, all tables in the schema
-          are included.
         credentials (ConnectionStringCredentials): MySQL database credentials.
         include_columns (Optional[Dict[str, Sequence[str]]]): Maps table name(s) to
           sequence of names of columns to include in the snapshot table(s).
@@ -127,10 +123,6 @@ def init_replication(
     # List to store resources to be returned
     resources = []
 
-    # Convert table_names to list if it is a string
-    if isinstance(table_names, str):
-        table_names = [table_names]
-
     try:
         with _get_conn(credentials) as conn:
             with conn.cursor() as cur:
@@ -151,21 +143,14 @@ def init_replication(
                             f"Cleared {len(keys_to_delete)} snapshot completion states for schema {schema_name}"
                         )
 
-                # Determine which tables to include
-                if table_names is None:
-                    # Get all tables in schema
-                    table_names_only = discover_schema_tables(
-                        schema_name, credentials, include_tables, exclude_tables
-                    )
-                else:
-                    # Filter provided table names
-                    table_names_only = filter_tables(
-                        table_names, include_tables, exclude_tables
-                    )
+                # Get all tables in schema with include/exclude filters applied
+                table_names_only = discover_schema_tables(
+                    schema_name, credentials, include_tables, exclude_tables
+                )
 
                 if not table_names_only:
                     logger.warning(
-                        f"No tables found in schema '{schema_name}' after filtering"
+                        f"No tables found in schema '{schema_name}' after filtering. No data will be replicated."
                     )
                     return None
 
@@ -547,7 +532,6 @@ def _get_conn(credentials: ConnectionStringCredentials) -> pymysql.Connection:
 def replication_resource(
     server_id: int,
     schema_name: str,
-    table_names: Optional[Union[str, Sequence[str]]] = None,
     credentials: ConnectionStringCredentials = dlt.secrets.value,
     include_columns: Optional[Dict[str, Sequence[str]]] = None,
     columns: Optional[Dict[str, TTableSchemaColumns]] = None,
@@ -566,14 +550,13 @@ def replication_resource(
     Args:
         server_id: Unique server ID for MySQL replication connection
         schema_name: MySQL database/schema name
-        table_names: Table name(s) to replicate. If not provided, all tables are included
         credentials: MySQL database credentials
         include_columns: Maps table name(s) to sequence of column names to include
         columns: Maps table name(s) to column hints to apply
         target_batch_size: Desired number of data items yielded in a batch
         write_mode: "merge" for final state tables, "append-only" for change stream
-        include_tables: Glob patterns for tables to include
-        exclude_tables: Glob patterns for tables to exclude
+        include_tables: Glob patterns for tables to include. If not provided, all tables are included
+        exclude_tables: Glob patterns for tables to exclude. These patterns are applied after include_tables
 
     Yields:
         Data items for changes in the MySQL tables
@@ -583,17 +566,6 @@ def replication_resource(
     source_state = dlt.current.source_state()
     resource_state = dlt.current.resource_state()
 
-    # Determine which tables to replicate
-    if table_names:
-        if isinstance(table_names, str):
-            table_names = [table_names]
-        filtered_tables = list(table_names)
-    else:
-        # Discover all tables in schema
-        filtered_tables = discover_schema_tables(
-            schema_name, credentials, include_tables, exclude_tables
-        )
-
     # Set up binlog stream reader
     options = {
         "connection_settings": _get_mysql_settings(credentials),
@@ -601,7 +573,9 @@ def replication_resource(
         "report_slave": socket.gethostname() or "dlt-mysql-replication",
         "only_events": [WriteRowsEvent, UpdateRowsEvent, DeleteRowsEvent],
         "only_schemas": [schema_name],
-        "only_tables": filtered_tables if filtered_tables else None,
+        "only_tables": discover_schema_tables(
+            schema_name, credentials, include_tables, exclude_tables
+        ),
     }
 
     use_gtid = _check_gtid_enabled(credentials)
