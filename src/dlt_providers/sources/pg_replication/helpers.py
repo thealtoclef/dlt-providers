@@ -176,10 +176,9 @@ def init_replication(
             ]
 
             if not table_names_only:
-                logger.warning(
+                raise ValueError(
                     f"No tables found in schema '{schema_name}' after filtering"
                 )
-                return None
 
             # Verify that publication includes the needed tables
             if table_names_only and publication_tables is not None:
@@ -740,11 +739,11 @@ def discover_schema_tables(
         exclude_tables: Glob patterns for tables to exclude
 
     Returns:
-        List of filtered table names. Returns empty list if schema has no tables.
+        List of table names that match the include/exclude patterns.
+        Raises ValueError if schema doesn't exist.
     """
     if not check_schema_exists(schema_name, credentials):
-        logger.warning(f"Schema {schema_name} does not exist")
-        return []
+        raise ValueError(f"Schema {schema_name} does not exist")
 
     # Get all tables in schema
     try:

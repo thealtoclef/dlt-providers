@@ -150,10 +150,9 @@ def init_replication(
                 )
 
                 if not table_names_only:
-                    logger.warning(
-                        f"No tables found in schema '{schema_name}' after filtering. No data will be replicated."
+                    raise ValueError(
+                        f"No tables found in schema '{schema_name}' after filtering."
                     )
-                    return None
 
                 # Verify MySQL replication configuration
                 _verify_replication_config(credentials)
@@ -445,11 +444,10 @@ def discover_schema_tables(
 
     Returns:
         List of table names that match the include/exclude patterns.
-        Returns empty list if schema doesn't exist or has no tables.
+        Raises ValueError if schema doesn't exist.
     """
     if not check_schema_exists(schema_name, credentials):
-        logger.warning(f"Schema {schema_name} does not exist")
-        return []
+        raise ValueError(f"Schema {schema_name} does not exist")
 
     # Get all tables in schema
     try:
