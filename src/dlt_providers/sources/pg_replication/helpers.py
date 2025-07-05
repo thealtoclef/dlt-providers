@@ -166,12 +166,14 @@ def init_replication(
                         "Please create the publication manually or set manage_publication=True."
                     )
 
-            # Get all tables in schema with include/exclude filters applied
-            actual_table_names = discover_schema_tables(
-                schema_name, credentials, include_tables, exclude_tables
-            )
-            # Extract just table names without schema prefix
-            table_names_only = [name.split(".")[-1] for name in actual_table_names]
+            # Get all tables in schema with include/exclude filters applied and
+            # extract just table names without schema prefix
+            table_names_only = [
+                name.split(".")[-1]
+                for name in discover_schema_tables(
+                    schema_name, credentials, include_tables, exclude_tables
+                )
+            ]
 
             if not table_names_only:
                 logger.warning(
@@ -594,59 +596,6 @@ def get_publication_tables(
     return [f"{row[0]}.{row[1]}" for row in result]
 
 
-def filter_tables(
-    table_names: List[str],
-    include_tables: Optional[Union[str, List[str]]] = None,
-    exclude_tables: Optional[Union[str, List[str]]] = None,
-) -> List[str]:
-    """Filter table names using include/exclude patterns.
-
-    Args:
-        table_names: List of table names to filter
-        include_tables: Glob patterns for tables to include
-        exclude_tables: Glob patterns for tables to exclude
-
-    Returns:
-        Filtered list of table names
-    """
-    if include_tables is None and exclude_tables is None:
-        return table_names
-
-    # Convert single patterns to lists
-    if isinstance(include_tables, str):
-        include_tables = [include_tables]
-    if isinstance(exclude_tables, str):
-        exclude_tables = [exclude_tables]
-
-    filtered_tables = table_names.copy()
-
-    # Apply include filters
-    if include_tables:
-        included = []
-        for table in filtered_tables:
-            for pattern in include_tables:
-                if fnmatch.fnmatch(table, pattern):
-                    included.append(table)
-                    break
-        filtered_tables = included
-
-    # Apply exclude filters
-    if exclude_tables:
-        excluded = []
-        for table in filtered_tables:
-            should_exclude = False
-            for pattern in exclude_tables:
-                if fnmatch.fnmatch(table, pattern):
-                    should_exclude = True
-                    break
-            if not should_exclude:
-                excluded.append(table)
-        filtered_tables = excluded
-
-    logger.info(f"Filtered {len(table_names)} tables to {len(filtered_tables)} tables")
-    return filtered_tables
-
-
 @dlt.resource(
     name=lambda args: args["slot_name"],
     standalone=True,
@@ -749,6 +698,33 @@ def replication_resource(
         start_lsn = gen.last_commit_lsn
 
 
+def check_schema_exists(
+    schema_name: str, credentials: ConnectionStringCredentials
+) -> bool:
+    """Check if a schema exists in the database.
+
+    Args:
+        schema_name: Name of the schema to check
+        credentials: Database credentials
+
+    Returns:
+        bool: True if schema exists, False otherwise
+    """
+    try:
+        with _get_conn(credentials) as conn:
+            with conn.cursor() as cur:
+                query = """
+                    SELECT 1
+                    FROM information_schema.schemata
+                    WHERE schema_name = %s
+                """
+                cur.execute(query, (schema_name,))
+                return bool(cur.fetchone())
+    except Exception as e:
+        logger.error(f"Failed to check if schema {schema_name} exists: {e}")
+        return False
+
+
 def discover_schema_tables(
     schema_name: str,
     credentials: ConnectionStringCredentials,
@@ -764,25 +740,93 @@ def discover_schema_tables(
         exclude_tables: Glob patterns for tables to exclude
 
     Returns:
-        List of filtered table names
+        List of filtered table names. Returns empty list if schema has no tables.
     """
+    if not check_schema_exists(schema_name, credentials):
+        logger.warning(f"Schema {schema_name} does not exist")
+        return []
+
     # Get all tables in schema
-    with _get_conn(credentials) as conn:
-        with conn.cursor() as cur:
-            query = """
-                SELECT table_name
-                FROM information_schema.tables
-                WHERE table_schema = %s
-                AND table_type = 'BASE TABLE'
-                ORDER BY table_name
-            """
-            cur.execute(query, (schema_name,))
-            all_tables = [row[0] for row in cur.fetchall()]
+    try:
+        with _get_conn(credentials) as conn:
+            with conn.cursor() as cur:
+                query = """
+                    SELECT table_name
+                    FROM information_schema.tables
+                    WHERE table_schema = %s
+                    AND table_type = 'BASE TABLE'
+                    ORDER BY table_name
+                """
+                cur.execute(query, (schema_name,))
+                all_tables = [row[0] for row in cur.fetchall()]
 
-    if not all_tables:
-        raise ValueError(f"Schema {schema_name} not found or has no tables")
+                if not all_tables:
+                    logger.warning(f"Schema {schema_name} has no tables")
+                    return []
 
-    return filter_tables(all_tables, include_tables, exclude_tables)
+        # Apply table filtering
+        return filter_tables(all_tables, include_tables, exclude_tables)
+    except Exception as e:
+        logger.error(f"Failed to discover tables in schema {schema_name}: {e}")
+        return []
+
+
+def filter_tables(
+    table_names: List[str],
+    include_tables: Optional[Union[str, List[str]]] = None,
+    exclude_tables: Optional[Union[str, List[str]]] = None,
+) -> List[str]:
+    """Filter table names using include/exclude patterns.
+
+    Args:
+        table_names: List of table names to filter
+        include_tables: Glob patterns for tables to include
+        exclude_tables: Glob patterns for tables to exclude
+
+    Returns:
+        Filtered list of table names
+    """
+    if include_tables is None and exclude_tables is None:
+        return table_names
+
+    # Convert single patterns to lists
+    if isinstance(include_tables, str):
+        include_tables = [include_tables]
+    if isinstance(exclude_tables, str):
+        exclude_tables = [exclude_tables]
+
+    filtered_tables = table_names.copy()
+
+    # Apply include filters
+    if include_tables:
+        included = []
+        for table in filtered_tables:
+            for pattern in include_tables:
+                if fnmatch.fnmatch(table, pattern):
+                    included.append(table)
+                    break
+        filtered_tables = included
+
+    # Apply exclude filters
+    if exclude_tables:
+        excluded = []
+        for table in filtered_tables:
+            should_exclude = False
+            for pattern in exclude_tables:
+                if fnmatch.fnmatch(table, pattern):
+                    should_exclude = True
+                    break
+            if not should_exclude:
+                excluded.append(table)
+        filtered_tables = excluded
+
+    logger.info(f"Filtered {len(table_names)} tables to {len(filtered_tables)} tables")
+
+    if not filtered_tables:
+        logger.warning("No tables matched the include/exclude patterns")
+        return []
+
+    return filtered_tables
 
 
 @dataclass
