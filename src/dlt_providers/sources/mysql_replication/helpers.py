@@ -1,3 +1,4 @@
+import fnmatch
 import socket
 from dataclasses import dataclass, field
 from typing import (
@@ -401,70 +402,133 @@ def save_init_position_resource(
     return resource
 
 
+def check_schema_exists(
+    schema_name: str, credentials: ConnectionStringCredentials
+) -> bool:
+    """Check if a schema exists in the MySQL database.
+
+    Args:
+        schema_name: Database schema name to check
+        credentials: MySQL connection credentials
+
+    Returns:
+        bool: True if schema exists, False otherwise
+    """
+    try:
+        with _get_conn(credentials) as conn:
+            with conn.cursor() as cur:
+                query = """
+                    SELECT SCHEMA_NAME 
+                    FROM INFORMATION_SCHEMA.SCHEMATA 
+                    WHERE SCHEMA_NAME = %s
+                """
+                cur.execute(query, (schema_name,))
+                return bool(cur.fetchone())
+    except Exception as e:
+        logger.error(f"Failed to check if schema {schema_name} exists: {e}")
+        return False
+
+
 def discover_schema_tables(
     schema_name: str,
     credentials: ConnectionStringCredentials,
-    include_tables: Optional[Sequence[str]] = None,
-    exclude_tables: Optional[Sequence[str]] = None,
+    include_tables: Optional[Union[str, List[str]]] = None,
+    exclude_tables: Optional[Union[str, List[str]]] = None,
 ) -> List[str]:
     """Discover tables in the specified schema.
 
     Args:
         schema_name: Database schema name
         credentials: MySQL connection credentials
-        include_tables: Optional list of tables to include
-        exclude_tables: Optional list of tables to exclude
+        include_tables: Glob patterns for tables to include
+        exclude_tables: Glob patterns for tables to exclude
 
     Returns:
-        List of table names
+        List of table names that match the include/exclude patterns.
+        Returns empty list if schema doesn't exist or has no tables.
     """
+    if not check_schema_exists(schema_name, credentials):
+        logger.warning(f"Schema {schema_name} does not exist")
+        return []
+
+    # Get all tables in schema
     try:
-        # Use pymysql to query information schema with parameterized query
         with _get_conn(credentials) as conn:
             with conn.cursor() as cur:
                 query = """
-                SELECT TABLE_NAME 
-                FROM INFORMATION_SCHEMA.TABLES 
-                WHERE TABLE_SCHEMA = %s AND TABLE_TYPE = 'BASE TABLE'
-                ORDER BY TABLE_NAME
+                    SELECT TABLE_NAME 
+                    FROM INFORMATION_SCHEMA.TABLES 
+                    WHERE TABLE_SCHEMA = %s AND TABLE_TYPE = 'BASE TABLE'
+                    ORDER BY TABLE_NAME
                 """
                 cur.execute(query, (schema_name,))
                 all_tables = [row[0] for row in cur.fetchall()]
 
+                if not all_tables:
+                    logger.warning(f"Schema {schema_name} has no tables")
+                    return []
+
+        # Apply table filtering
+        return filter_tables(all_tables, include_tables, exclude_tables)
     except Exception as e:
         logger.error(f"Failed to discover tables in schema {schema_name}: {e}")
-        raise
-
-    # Apply table filtering
-    return filter_tables(all_tables, include_tables, exclude_tables)
+        return []
 
 
 def filter_tables(
     all_tables: List[str],
-    include_tables: Optional[Sequence[str]] = None,
-    exclude_tables: Optional[Sequence[str]] = None,
+    include_tables: Optional[Union[str, Sequence[str]]] = None,
+    exclude_tables: Optional[Union[str, Sequence[str]]] = None,
 ) -> List[str]:
-    """Filter table list based on include/exclude patterns.
+    """Filter table names using include/exclude patterns.
 
     Args:
-        all_tables: List of all available tables
-        include_tables: Optional list of tables to include
-        exclude_tables: Optional list of tables to exclude
+        all_tables: List of table names to filter
+        include_tables: Glob patterns for tables to include
+        exclude_tables: Glob patterns for tables to exclude
 
     Returns:
         Filtered list of table names
     """
-    filtered_tables = list(all_tables)
+    if include_tables is None and exclude_tables is None:
+        return all_tables
 
-    # Apply include filter
+    # Convert single patterns to lists
+    if isinstance(include_tables, str):
+        include_tables = [include_tables]
+    if isinstance(exclude_tables, str):
+        exclude_tables = [exclude_tables]
+
+    filtered_tables = all_tables.copy()
+
+    # Apply include filters
     if include_tables:
-        include_set = set(include_tables)
-        filtered_tables = [t for t in filtered_tables if t in include_set]
+        included = []
+        for table in filtered_tables:
+            for pattern in include_tables:
+                if fnmatch.fnmatch(table, pattern):
+                    included.append(table)
+                    break
+        filtered_tables = included
 
-    # Apply exclude filter
+    # Apply exclude filters
     if exclude_tables:
-        exclude_set = set(exclude_tables)
-        filtered_tables = [t for t in filtered_tables if t not in exclude_set]
+        excluded = []
+        for table in filtered_tables:
+            should_exclude = False
+            for pattern in exclude_tables:
+                if fnmatch.fnmatch(table, pattern):
+                    should_exclude = True
+                    break
+            if not should_exclude:
+                excluded.append(table)
+        filtered_tables = excluded
+
+    logger.info(f"Filtered {len(all_tables)} tables to {len(filtered_tables)} tables")
+
+    if not filtered_tables:
+        logger.warning("No tables matched the include/exclude patterns")
+        return []
 
     return filtered_tables
 
