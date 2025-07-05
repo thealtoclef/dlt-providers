@@ -23,7 +23,7 @@ def pg_replication(
     target_batch_size: int = 1000,
     write_mode: Literal["merge", "append-only"] = "merge",
     flush_slot: bool = True,
-    publication_autocreate: bool = True,
+    manage_publication: bool = True,
 ) -> DltSource:
     """PostgreSQL replication source with initial snapshots and ongoing replication.
 
@@ -57,7 +57,7 @@ def pg_replication(
             - "append-only": Adds data as a stream of changes (INSERT, UPDATE-INSERT, UPDATE-DELETE,
               DELETE events). Retains historical state of data with all change events preserved.
         flush_slot (bool): Whether processed messages are discarded from the replication slot.
-        publication_autocreate (bool): If True (default), automatically creates the publication if it doesn't exist.
+        manage_publication (bool): If True (default), automatically creates the publication if it doesn't exist.
           If False, uses the publication as-is without checking or creating it (will fail if publication doesn't exist).
 
     Returns:
@@ -96,7 +96,7 @@ def pg_replication(
         slot_name=slot_name,
         publication_name=publication_name,
         schema_name=schema_name,
-        publication_autocreate=publication_autocreate,
+        manage_publication=manage_publication,
         credentials=credentials,
         include_columns=include_columns,
         columns=columns,

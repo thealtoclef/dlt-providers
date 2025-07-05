@@ -71,7 +71,7 @@ def init_replication(
     include_tables: Optional[Union[str, List[str]]] = None,
     exclude_tables: Optional[Union[str, List[str]]] = None,
     initial_snapshots: bool = True,
-    publication_autocreate: bool = True,
+    manage_publication: bool = True,
 ) -> Optional[Union[DltResource, List[DltResource]]]:
     """Initializes logical replication on the given slot and publication.
 
@@ -116,6 +116,9 @@ def init_replication(
           and tracked using pipeline state. Each table's snapshot state is checked
           at runtime when the pipeline is active, preventing duplicate snapshots
           on subsequent runs. Use `reset=True` to force re-snapshot.
+        manage_publication (bool): Whether to create and drop publication
+          automatically. If set to False, the publication must exist before
+          running the pipeline.
 
     Returns:
         - None if `initial_snapshots` is `False`
@@ -131,7 +134,8 @@ def init_replication(
         with rep_conn.cursor() as cur:
             if reset:
                 drop_replication_slot(slot_name, cur)
-                drop_publication(publication_name, cur)
+                if manage_publication:
+                    drop_publication(publication_name, cur)
                 # Clear snapshot completion state to force re-snapshot
                 # Note: We clear state for all tables in this schema/publication
                 source_state = dlt.current.source_state()
@@ -151,15 +155,15 @@ def init_replication(
             try:
                 publication_tables = get_publication_tables(publication_name, cur)
             except PublicationNotFoundError:
-                if publication_autocreate:
+                if manage_publication:
                     logger.info(
                         f"Creating publication '{publication_name}' as it doesn't exist"
                     )
                     create_publication(publication_name, cur)
                 else:
                     raise ValueError(
-                        f"Publication '{publication_name}' does not exist and publication_autocreate is False. "
-                        "Please create the publication manually or set publication_autocreate=True."
+                        f"Publication '{publication_name}' does not exist and manage_publication is False. "
+                        "Please create the publication manually or set manage_publication=True."
                     )
 
             # Get all tables in schema with include/exclude filters applied
@@ -661,7 +665,7 @@ def replication_resource(
 
     - Relies on a replication slot and publication that publishes DML operations
     (i.e. `insert`, `update`, and/or `delete`). Helper `init_replication` can be
-    used to set this up. The publication can be automatically created if `publication_autocreate`
+    used to set this up. The publication can be automatically created if `manage_publication`
     is set to True in the main `pg_replication` function.
     - Maintains LSN of last consumed message in state to track progress.
     - At start of the run, advances the slot upto last consumed message in previous run.
