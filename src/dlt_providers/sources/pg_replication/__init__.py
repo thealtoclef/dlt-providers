@@ -13,7 +13,6 @@ def pg_replication(
     slot_name: str = dlt.config.value,
     publication_name: str = dlt.config.value,
     schema_name: str = dlt.config.value,
-    table_names: Optional[Union[str, Sequence[str]]] = dlt.config.value,
     credentials: ConnectionStringCredentials = dlt.secrets.value,
     include_columns: Optional[Dict[str, Sequence[str]]] = None,
     columns: Optional[Dict[str, TTableSchemaColumns]] = None,
@@ -35,9 +34,6 @@ def pg_replication(
         slot_name (str): Name of the replication slot to be created.
         publication_name (str): Name of the publication to be used or created.
         schema_name (str): Postgres schema name.
-        table_names (Optional[Union[str, Sequence[str]]]): Table name(s) to be
-          added to the publication. If not provided, all tables in the schema
-          are added.
         credentials (ConnectionStringCredentials): Postgres database credentials.
         include_columns (Optional[Dict[str, Sequence[str]]]): Maps table name(s) to
           sequence of names of columns to include in the snapshot table(s).
@@ -49,9 +45,9 @@ def pg_replication(
           and recreated. Has no effect if a slot and publication with the provided
           names do not yet exist.
         include_tables (Optional[Union[str, List[str]]]): Glob patterns for tables to include.
-          Can be used to filter tables even when not controlling publication creation.
+          If not provided, all tables in the schema are included.
         exclude_tables (Optional[Union[str, List[str]]]): Glob patterns for tables to exclude.
-          Can be used to filter tables even when not controlling publication creation.
+          These patterns are applied after include_tables.
         initial_snapshots (bool): Whether to create read-only initial snapshot resources
           using connectorx backend.
         target_batch_size (int): Desired number of data items yielded in a batch for replication.
@@ -100,7 +96,6 @@ def pg_replication(
         slot_name=slot_name,
         publication_name=publication_name,
         schema_name=schema_name,
-        table_names=table_names,
         publication_autocreate=publication_autocreate,
         credentials=credentials,
         include_columns=include_columns,

@@ -64,7 +64,6 @@ def init_replication(
     slot_name: str = dlt.config.value,
     publication_name: str = dlt.config.value,
     schema_name: str = dlt.config.value,
-    table_names: Optional[Union[str, Sequence[str]]] = dlt.config.value,
     credentials: ConnectionStringCredentials = dlt.secrets.value,
     include_columns: Optional[Mapping[str, Sequence[str]]] = None,
     columns: Optional[Mapping[str, TTableSchemaColumns]] = None,
@@ -83,9 +82,6 @@ def init_replication(
         slot_name (str): Name of the replication slot to be created.
         publication_name (str): Name of the publication to be created.
         schema_name (str): Postgres schema name.
-        table_names (Optional[Union[str, Sequence[str]]]): Table name(s) to be
-          added to the publication. If not provided, all tables in the schema
-          are added.
         credentials (ConnectionStringCredentials): Postgres database credentials.
         include_columns (Optional[Dict[str, Sequence[str]]]): Maps table name(s) to
           sequence of names of columns to include in the snapshot table(s).
@@ -112,9 +108,9 @@ def init_replication(
           and recreated. Has no effect if a slot and publication with the provided
           names do not yet exist.
         include_tables (Optional[Union[str, List[str]]]): Glob patterns for tables to include.
-          Can be used to filter tables even when not controlling publication creation.
+          If not provided, all tables in the schema are included.
         exclude_tables (Optional[Union[str, List[str]]]): Glob patterns for tables to exclude.
-          Can be used to filter tables even when not controlling publication creation.
+          These patterns are applied after include_tables.
         initial_snapshots (bool): Whether to create initial snapshot resources
           using connectorx backend. Snapshots are only created once per table
           and tracked using pipeline state. Each table's snapshot state is checked
@@ -129,10 +125,6 @@ def init_replication(
 
     # List to store resources to be returned
     resources = []
-
-    # Convert table_names to list if it is a string
-    if isinstance(table_names, str):
-        table_names = [table_names]
 
     rep_conn = _get_rep_conn(credentials)
     try:
@@ -170,19 +162,12 @@ def init_replication(
                         "Please create the publication manually or set publication_autocreate=True."
                     )
 
-            # Determine which tables to include
-            if table_names is None:
-                # Get all tables in schema
-                actual_table_names = discover_schema_tables(
-                    schema_name, credentials, include_tables, exclude_tables
-                )
-                # Extract just table names without schema prefix
-                table_names_only = [name.split(".")[-1] for name in actual_table_names]
-            else:
-                # Filter provided table names
-                table_names_only = filter_tables(
-                    table_names, include_tables, exclude_tables
-                )
+            # Get all tables in schema with include/exclude filters applied
+            actual_table_names = discover_schema_tables(
+                schema_name, credentials, include_tables, exclude_tables
+            )
+            # Extract just table names without schema prefix
+            table_names_only = [name.split(".")[-1] for name in actual_table_names]
 
             if not table_names_only:
                 logger.warning(
