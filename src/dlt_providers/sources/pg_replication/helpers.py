@@ -55,7 +55,7 @@ from .exceptions import PublicationNotFoundError
 from .schema_types import _to_dlt_column_schema, _to_dlt_val
 
 
-def init_replication(
+def source_setup(
     credentials: ConnectionStringCredentials,
     publication_name: str,
     slot_name: str,
@@ -65,10 +65,7 @@ def init_replication(
     reset: bool = False,
     manage_publication: bool = True,
 ) -> Dict[str, Any]:
-    """Initializes logical replication on the given slot and publication.
-
-    Creates a replication slot and publication if they do not yet exist.
-    Discovers and returns the list of tables that will be replicated.
+    """Setup for pg_replication source.
 
     Args:
         credentials (ConnectionStringCredentials): Database connection credentials.
@@ -87,9 +84,11 @@ def init_replication(
             running the pipeline.
 
     Returns:
-        Dict containing the following derived information:
-        - 'tables': List of table names that were discovered and will be replicated
+        Dict[str, Any]: Dictionary containing the following derived information:
+            - 'tables': List of table names after filtering
+            - 'setup_resources': List of setup resources
     """
+    setup_resources = []
 
     rep_conn = _get_rep_conn(credentials)
     try:
@@ -169,6 +168,7 @@ def init_replication(
 
     return {
         "tables": tables,
+        "setup_resources": setup_resources,
     }
 
 

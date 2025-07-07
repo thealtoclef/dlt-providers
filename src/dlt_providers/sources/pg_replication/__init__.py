@@ -5,7 +5,7 @@ from dlt.common.schema.typing import TTableSchemaColumns
 from dlt.extract import DltSource
 from dlt.sources.credentials import ConnectionStringCredentials
 
-from .helpers import create_snapshot_resources, init_replication, replication_resource
+from .helpers import create_snapshot_resources, replication_resource, source_setup
 
 
 @dlt.source
@@ -63,8 +63,10 @@ def pg_replication(
     Returns:
         DltSource: A dlt source containing both snapshot and replication resources.
     """
+    resources = []
+
     # Initialize replication and get replication info
-    replication_info = init_replication(
+    setup_info = source_setup(
         credentials=credentials,
         schema_name=schema_name,
         publication_name=publication_name,
@@ -74,14 +76,14 @@ def pg_replication(
         exclude_tables=exclude_tables,
         manage_publication=manage_publication,
     )
+    resources.extend(setup_info.get("setup_resources", []))
 
     # Create snapshot resources if requested
-    resources = []
-    if initial_snapshots and replication_info["tables"]:
+    if initial_snapshots:
         snapshot_resources = create_snapshot_resources(
             credentials=credentials,
             schema_name=schema_name,
-            tables=replication_info["tables"],
+            tables=setup_info["tables"],
             include_columns=include_columns,
             columns=columns,
         )
@@ -96,7 +98,7 @@ def pg_replication(
         schema_name=schema_name,
         publication_name=publication_name,
         slot_name=slot_name,
-        tables=replication_info["tables"],
+        tables=setup_info["tables"],
         include_columns=include_columns,
         columns=columns,
         target_batch_size=target_batch_size,
