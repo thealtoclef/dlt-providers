@@ -54,146 +54,50 @@ from .exceptions import StopReplication
 from .schema_types import _to_dlt_column_schema, _to_dlt_val
 
 
-@with_config(
-    sections=("sources", "mysql_replication"),
-    sections_merge_style=ConfigSectionContext.resource_merge_style,
-    section_arg_name="server_id",
-)
-def init_replication(
+def source_setup(
+    credentials: ConnectionStringCredentials,
     schema_name: str,
-    credentials: ConnectionStringCredentials = dlt.secrets.value,
-    include_columns: Optional[Dict[str, Sequence[str]]] = None,
-    columns: Optional[Dict[str, TTableSchemaColumns]] = None,
-    reset: bool = False,
     include_tables: Optional[Union[str, List[str]]] = None,
     exclude_tables: Optional[Union[str, List[str]]] = None,
-    initial_snapshots: bool = True,
-) -> Optional[Union[DltResource, List[DltResource]]]:
-    """Initializes MySQL replication with comprehensive validation and setup.
-
-    Validates MySQL server configuration, checks user privileges, detects optimal
-    replication method (GTID vs binlog coordinates), and creates initial snapshot
-    resources using connectorx backend.
+) -> Dict[str, Any]:
+    """Setup for mysql_replication source.
 
     Args:
-        server_id (int): MySQL server ID for replication.
-        schema_name (str): MySQL database/schema name.
-        credentials (ConnectionStringCredentials): MySQL database credentials.
-        include_columns (Optional[Dict[str, Sequence[str]]]): Maps table name(s) to
-          sequence of names of columns to include in the snapshot table(s).
-          Any column not in the sequence is excluded. If not provided, all columns
-          are included. For example:
-          ```
-          include_columns={
-              "table_x": ["col_a", "col_c"],
-              "table_y": ["col_x", "col_y", "col_z"],
-          }
-          ```
-          Argument is only used if `initial_snapshots` is `True`.
-        columns (Optional[Dict[str, TTableSchemaColumns]]): Maps
-          table name(s) to column hints to apply on the snapshot table resource(s).
-          For example:
-          ```
-          columns={
-              "table_x": {"col_a": {"data_type": "json"}},
-              "table_y": {"col_y": {"precision": 32}},
-          }
-          ```
-          Argument is only used if `initial_snapshots` is `True`.
-        reset (bool): If set to True, clears snapshot completion state to force
-          re-snapshot of all tables.
-        include_tables (Optional[Union[str, List[str]]]): Glob patterns for tables to include.
-          Can be used to filter tables.
-        exclude_tables (Optional[Union[str, List[str]]]): Glob patterns for tables to exclude.
-          Can be used to filter tables.
-        initial_snapshots (bool): Whether to create initial snapshot resources
-          using connectorx backend. Snapshots are only created once per table
-          and tracked using pipeline state. Each table's snapshot state is checked
-          at runtime when the pipeline is active, preventing duplicate snapshots
-          on subsequent runs. Use `reset=True` to force re-snapshot.
+        credentials: MySQL database credentials.
+        schema_name: MySQL database/schema name.
+        include_tables: Glob patterns for tables to include.
+            Can be used to filter tables.
+        exclude_tables: Glob patterns for tables to exclude.
+            Can be used to filter tables.
 
     Returns:
-        - None if `initial_snapshots` is `False`
-        - a `DltResource` object or a list of `DltResource` objects for the snapshot
-          table(s) if `initial_snapshots` is `True`
-
-    Raises:
-        ValueError: If MySQL server configuration is invalid or user lacks privileges
+        Dict[str, Any]: Dictionary containing the following derived information:
+            - 'tables': List of table names after filtering
+            - 'setup_resources': List of setup resources
     """
+    setup_resources = []
 
-    # List to store resources to be returned
-    resources = []
+    # Get all tables in schema with include/exclude filters applied
+    table_names = discover_schema_tables(
+        schema_name, credentials, include_tables, exclude_tables
+    )
 
-    try:
-        with _get_conn(credentials) as conn:
-            with conn.cursor() as cur:
-                if reset:
-                    # Clear snapshot completion state to force re-snapshot
-                    # Note: We clear state for all tables in this schema
-                    source_state = dlt.current.source_state()
-                    state_prefix = f"snapshots_completed_{schema_name}_"
-                    keys_to_delete = [
-                        key
-                        for key in source_state.keys()
-                        if key.startswith(state_prefix)
-                    ]
-                    for key in keys_to_delete:
-                        del source_state[key]
-                    if keys_to_delete:
-                        logger.info(
-                            f"Cleared {len(keys_to_delete)} snapshot completion states for schema {schema_name}"
-                        )
+    if not table_names:
+        raise ValueError(f"No tables found in schema '{schema_name}' after filtering.")
 
-                # Get all tables in schema with include/exclude filters applied
-                table_names_only = discover_schema_tables(
-                    schema_name, credentials, include_tables, exclude_tables
-                )
+    # Verify MySQL replication configuration
+    _verify_replication_config(credentials)
 
-                if not table_names_only:
-                    raise ValueError(
-                        f"No tables found in schema '{schema_name}' after filtering."
-                    )
+    # Verify user privileges for replication
+    _verify_replication_privileges(credentials)
 
-                # Verify MySQL replication configuration
-                _verify_replication_config(credentials)
+    # Create the position resource
+    position_resource = save_init_position_resource(
+        schema_name=schema_name, credentials=credentials
+    )
+    setup_resources.append(position_resource)
 
-                # Verify user privileges for replication
-                _verify_replication_privileges(credentials)
-
-                # Save the initial position
-                resources.append(
-                    save_init_position_resource(
-                        schema_name=schema_name, credentials=credentials
-                    )
-                )
-
-                # Handle initial snapshots
-                if initial_snapshots:
-                    # Create snapshot resources
-                    for table_name in table_names_only:
-                        # Get primary key for the table
-                        primary_key = _get_pk(cur, table_name, schema_name)
-                        # For snapshots, always use append write disposition
-                        # since they are initial data loads
-                        write_disposition: TWriteDisposition = "append"
-                        resources.append(
-                            snapshot_table_resource(
-                                schema_name=schema_name,
-                                table_name=table_name,
-                                primary_key=primary_key,
-                                write_disposition=write_disposition,
-                                columns=columns.get(table_name) if columns else None,
-                                credentials=credentials,
-                                include_columns=include_columns.get(table_name)
-                                if include_columns
-                                else None,
-                            )
-                        )
-    except Exception as e:
-        logger.error(f"Failed to initialize MySQL replication: {e}")
-        raise
-
-    return resources
+    return {"tables": table_names, "setup_resources": setup_resources}
 
 
 def build_snapshot_query(
@@ -267,6 +171,11 @@ def build_snapshot_query(
     return query
 
 
+@with_config(
+    sections=("sources", "mysql_replication"),
+    sections_merge_style=ConfigSectionContext.resource_merge_style,
+    section_arg_name="server_id",
+)
 def snapshot_table_resource(
     schema_name: str,
     table_name: str,
@@ -295,6 +204,9 @@ def snapshot_table_resource(
         columns: Column schema hints
         credentials: Database connection credentials
         include_columns: Specific columns to include in the snapshot
+
+    Returns:
+        DltResource: A resource that can be used to load the table data
     """
 
     # Create state key for tracking snapshot completion
@@ -351,6 +263,70 @@ def snapshot_table_resource(
     logger.info(f"Created snapshot resource for {schema_name}.{table_name}")
 
     return resource
+
+
+def create_snapshot_resources(
+    credentials: ConnectionStringCredentials,
+    schema_name: str,
+    tables: List[str],
+    include_columns: Optional[Dict[str, Sequence[str]]] = None,
+    columns: Optional[Dict[str, TTableSchemaColumns]] = None,
+    reset: bool = False,
+) -> List[DltResource]:
+    """Create snapshot resources for the specified tables.
+
+    Args:
+        credentials: MySQL database credentials.
+        schema_name: MySQL database/schema name.
+        tables: List of table names to create snapshot resources for.
+        include_columns: Maps table name(s) to sequence of column names to include.
+            Any column not in the sequence is excluded. If not provided, all columns
+            are included.
+        columns: Maps table name(s) to column hints to apply on the snapshot table(s).
+        reset: If True, clears snapshot completion state to force re-snapshot.
+
+    Returns:
+        List of DltResource objects for the snapshot tables.
+    """
+    resources = []
+
+    if reset:
+        # Clear snapshot completion state to force re-snapshot
+        source_state = dlt.current.source_state()
+        state_prefix = f"snapshots_completed_{schema_name}_"
+        keys_to_delete = [
+            key for key in source_state.keys() if key.startswith(state_prefix)
+        ]
+        for key in keys_to_delete:
+            del source_state[key]
+        if keys_to_delete:
+            logger.info(
+                f"Cleared {len(keys_to_delete)} snapshot completion states for schema {schema_name}"
+            )
+
+    with _get_conn(credentials) as conn:
+        with conn.cursor() as cur:
+            for table_name in tables:
+                # Get primary key for the table
+                primary_key = _get_pk(cur, table_name, schema_name)
+                # For snapshots, always use append write disposition
+                # since they are initial data loads
+                write_disposition: TWriteDisposition = "append"
+                resources.append(
+                    snapshot_table_resource(
+                        schema_name=schema_name,
+                        table_name=table_name,
+                        primary_key=primary_key,
+                        write_disposition=write_disposition,
+                        columns=columns.get(table_name) if columns else None,
+                        credentials=credentials,
+                        include_columns=include_columns.get(table_name)
+                        if include_columns
+                        else None,
+                    )
+                )
+
+    return resources
 
 
 def save_init_position_resource(
@@ -592,15 +568,14 @@ def _get_conn(credentials: ConnectionStringCredentials) -> pymysql.Connection:
     standalone=True,
 )
 def replication_resource(
-    server_id: int,
+    credentials: ConnectionStringCredentials,
     schema_name: str,
-    credentials: ConnectionStringCredentials = dlt.secrets.value,
+    server_id: int,
+    tables: List[str],
     include_columns: Optional[Dict[str, Sequence[str]]] = None,
     columns: Optional[Dict[str, TTableSchemaColumns]] = None,
     target_batch_size: int = 1000,
     write_mode: Literal["merge", "append-only"] = "merge",
-    include_tables: Optional[Union[str, List[str]]] = None,
-    exclude_tables: Optional[Union[str, List[str]]] = None,
 ) -> Iterable[TDataItem]:
     """Resource yielding data items for changes in MySQL tables via binlog replication.
 
@@ -635,9 +610,7 @@ def replication_resource(
         "report_slave": socket.gethostname() or "dlt-mysql-replication",
         "only_events": [WriteRowsEvent, UpdateRowsEvent, DeleteRowsEvent],
         "only_schemas": [schema_name],
-        "only_tables": discover_schema_tables(
-            schema_name, credentials, include_tables, exclude_tables
-        ),
+        "only_tables": tables,
     }
 
     use_gtid = _check_gtid_enabled(credentials)
