@@ -55,79 +55,41 @@ from .exceptions import PublicationNotFoundError
 from .schema_types import _to_dlt_column_schema, _to_dlt_val
 
 
-@with_config(
-    sections=("sources", "pg_replication"),
-    sections_merge_style=ConfigSectionContext.resource_merge_style,
-    section_arg_name="slot_name",
-)
 def init_replication(
-    slot_name: str = dlt.config.value,
-    publication_name: str = dlt.config.value,
-    schema_name: str = dlt.config.value,
-    credentials: ConnectionStringCredentials = dlt.secrets.value,
-    include_columns: Optional[Mapping[str, Sequence[str]]] = None,
-    columns: Optional[Mapping[str, TTableSchemaColumns]] = None,
-    reset: bool = False,
+    credentials: ConnectionStringCredentials,
+    publication_name: str,
+    slot_name: str,
+    schema_name: str,
     include_tables: Optional[Union[str, List[str]]] = None,
     exclude_tables: Optional[Union[str, List[str]]] = None,
-    initial_snapshots: bool = True,
+    reset: bool = False,
     manage_publication: bool = True,
-) -> Optional[Union[DltResource, List[DltResource]]]:
+) -> Dict[str, Any]:
     """Initializes logical replication on the given slot and publication.
 
     Creates a replication slot and publication if they do not yet exist.
-    Creates snapshot resources using connectorx backend.
+    Discovers and returns the list of tables that will be replicated.
 
     Args:
-        slot_name (str): Name of the replication slot to be created.
-        publication_name (str): Name of the publication to be created.
-        schema_name (str): Postgres schema name.
-        credentials (ConnectionStringCredentials): Postgres database credentials.
-        include_columns (Optional[Dict[str, Sequence[str]]]): Maps table name(s) to
-          sequence of names of columns to include in the snapshot table(s).
-          Any column not in the sequence is excluded. If not provided, all columns
-          are included. For example:
-          ```
-          include_columns={
-              "table_x": ["col_a", "col_c"],
-              "table_y": ["col_x", "col_y", "col_z"],
-          }
-          ```
-          Argument is only used if `initial_snapshots` is `True`.
-        columns (Optional[Dict[str, TTableSchemaColumns]]): Maps
-          table name(s) to column hints to apply on the snapshot table resource(s).
-          For example:
-          ```
-          columns={
-              "table_x": {"col_a": {"data_type": "json"}},
-              "table_y": {"col_y": {"precision": 32}},
-          }
-          ```
-          Argument is only used if `initial_snapshots` is `True`.
+        credentials (ConnectionStringCredentials): Database connection credentials.
+        schema_name (str): The schema to replicate tables from.
+        publication_name (str): The name of the publication to create or use.
+        slot_name (str): The name of the replication slot to create or use.
         reset (bool): If set to True, the existing slot and publication are dropped
-          and recreated. Has no effect if a slot and publication with the provided
-          names do not yet exist.
+            and recreated. Has no effect if a slot and publication with the provided
+            names do not yet exist.
         include_tables (Optional[Union[str, List[str]]]): Glob patterns for tables to include.
-          If not provided, all tables in the schema are included.
+            If not provided, all tables in the schema are included.
         exclude_tables (Optional[Union[str, List[str]]]): Glob patterns for tables to exclude.
-          These patterns are applied after include_tables.
-        initial_snapshots (bool): Whether to create initial snapshot resources
-          using connectorx backend. Snapshots are only created once per table
-          and tracked using pipeline state. Each table's snapshot state is checked
-          at runtime when the pipeline is active, preventing duplicate snapshots
-          on subsequent runs. Use `reset=True` to force re-snapshot.
+            These patterns are applied after include_tables.
         manage_publication (bool): Whether to create and drop publication
-          automatically. If set to False, the publication must exist before
-          running the pipeline.
+            automatically. If set to False, the publication must exist before
+            running the pipeline.
 
     Returns:
-        - None if `initial_snapshots` is `False`
-        - a `DltResource` object or a list of `DltResource` objects for the snapshot
-          table(s) if `initial_snapshots` is `True`
+        Dict containing the following derived information:
+        - 'tables': List of table names that were discovered and will be replicated
     """
-
-    # List to store resources to be returned
-    resources = []
 
     rep_conn = _get_rep_conn(credentials)
     try:
@@ -181,8 +143,11 @@ def init_replication(
 
             # Verify that publication includes the needed tables if it already exists
             if publication_already_exist:
+                qualified_tables = [f"{schema_name}.{table}" for table in tables]
                 missing_tables = [
-                    table for table in tables if table not in publication_tables
+                    table
+                    for table in qualified_tables
+                    if table not in publication_tables
                 ]
 
                 if missing_tables:
@@ -194,28 +159,6 @@ def init_replication(
             # Create replication slot if it doesn't exist
             create_replication_slot(slot_name, rep_cur)
 
-            # Handle initial snapshots
-            if initial_snapshots:
-                # Create snapshot resources
-                for table_name in tables:
-                    # Get primary key for the table
-                    primary_key = _get_pk(credentials, schema_name, table_name)
-                    # For snapshots, always use append write disposition
-                    # since they are initial data loads
-                    write_disposition: TWriteDisposition = "append"
-                    resources.append(
-                        snapshot_table_resource(
-                            schema_name=schema_name,
-                            table_name=table_name,
-                            primary_key=primary_key,
-                            write_disposition=write_disposition,
-                            columns=columns.get(table_name) if columns else None,
-                            credentials=credentials,
-                            include_columns=include_columns.get(table_name)
-                            if include_columns
-                            else None,
-                        )
-                    )
     except Exception:
         rep_conn.rollback()
         raise
@@ -224,7 +167,9 @@ def init_replication(
     finally:
         rep_conn.close()
 
-    return resources
+    return {
+        "tables": tables,
+    }
 
 
 def create_publication(
@@ -361,6 +306,11 @@ def build_snapshot_query(
     return query
 
 
+@with_config(
+    sections=("sources", "pg_replication"),
+    sections_merge_style=ConfigSectionContext.resource_merge_style,
+    section_arg_name="slot_name",
+)
 def snapshot_table_resource(
     schema_name: str,
     table_name: str,
@@ -445,6 +395,58 @@ def snapshot_table_resource(
     logger.info(f"Created snapshot resource for {schema_name}.{table_name}")
 
     return resource
+
+
+def create_snapshot_resources(
+    credentials: ConnectionStringCredentials,
+    schema_name: str,
+    tables: List[str],
+    include_columns: Optional[Mapping[str, Sequence[str]]] = None,
+    columns: Optional[Mapping[str, TTableSchemaColumns]] = None,
+) -> List[DltResource]:
+    """Create snapshot resources for the specified tables.
+
+    Args:
+        tables: List of table names to create snapshot resources for
+        schema_name: Name of the schema containing the tables
+        credentials: Database connection credentials
+        include_columns: Optional mapping of table names to columns to include
+        columns: Optional column schema hints for the tables
+
+    Returns:
+        List of DltResource objects for the snapshot tables
+    """
+    resources = []
+
+    for table_name in tables:
+        # Get primary key for the table
+        primary_key = _get_pk(credentials, schema_name, table_name)
+        # For snapshots, always use append write disposition since they are initial data loads
+        write_disposition: TWriteDisposition = "append"
+
+        # Get include_columns for this table if specified
+        table_include_columns = None
+        if include_columns and table_name in include_columns:
+            table_include_columns = include_columns[table_name]
+
+        # Get columns for this table if specified
+        table_columns = None
+        if columns and table_name in columns:
+            table_columns = columns[table_name]
+
+        # Create the snapshot resource
+        resource = snapshot_table_resource(
+            schema_name=schema_name,
+            table_name=table_name,
+            primary_key=primary_key,
+            write_disposition=write_disposition,
+            columns=table_columns,
+            credentials=credentials,
+            include_columns=table_include_columns,
+        )
+        resources.append(resource)
+
+    return resources
 
 
 def get_max_lsn(
@@ -597,12 +599,11 @@ def get_publication_tables(
     standalone=True,
 )
 def replication_resource(
-    slot_name: str,
-    publication_name: str,
+    credentials: ConnectionStringCredentials,
     schema_name: str,
-    credentials: ConnectionStringCredentials = dlt.secrets.value,
-    include_tables: Optional[Union[str, List[str]]] = None,
-    exclude_tables: Optional[Union[str, List[str]]] = None,
+    publication_name: str,
+    slot_name: str,
+    tables: List[str],
     include_columns: Optional[Dict[str, Sequence[str]]] = None,
     columns: Optional[Dict[str, TTableSchemaColumns]] = None,
     target_batch_size: int = 1000,
@@ -624,44 +625,43 @@ def replication_resource(
         publication_name (str): Name of the publication that publishes DML operations for the table(s).
         schema_name (str): Name of the schema to filter tables from.
         credentials (ConnectionStringCredentials): Postgres database credentials.
-        include_tables (Optional[Union[str, List[str]]]): Glob patterns for tables to include
-        exclude_tables (Optional[Union[str, List[str]]]): Glob patterns for tables to exclude
+        tables (List[str]): List of table names to include in the replication resource.
         include_columns (Optional[Dict[str, Sequence[str]]]): Maps table name(s) to
-          sequence of names of columns to include in the generated data items.
-          Any column not in the sequence is excluded. If not provided, all columns
-          are included. For example:
-          ```
-          include_columns={
-              "table_x": ["col_a", "col_c"],
-              "table_y": ["col_x", "col_y", "col_z"],
-          }
-          ```
+            sequence of names of columns to include in the generated data items.
+            Any column not in the sequence is excluded. If not provided, all columns
+            are included. For example:
+            ```
+            include_columns={
+                "table_x": ["col_a", "col_c"],
+                "table_y": ["col_x", "col_y", "col_z"],
+            }
+            ```
         columns (Optional[Dict[str, TTableHintTemplate[TAnySchemaColumns]]]): Maps
-          table name(s) to column hints to apply on the replicated table(s). For example:
-          ```
-          columns={
-              "table_x": {"col_a": {"data_type": "json"}},
-              "table_y": {"col_y": {"precision": 32}},
-          }
-          ```
+            table name(s) to column hints to apply on the replicated table(s). For example:
+            ```
+            columns={
+                "table_x": {"col_a": {"data_type": "json"}},
+                "table_y": {"col_y": {"precision": 32}},
+            }
+            ```
         target_batch_size (int): Desired number of data items yielded in a batch.
-          Can be used to limit the data items in memory. Note that the number of
-          data items yielded can be (far) greater than `target_batch_size`, because
-          all messages belonging to the same transaction are always processed in
-          the same batch, regardless of the number of messages in the transaction
-          and regardless of the value of `target_batch_size`. The number of data
-          items can also be smaller than `target_batch_size` when the replication
-          slot is exhausted before a batch is full.
+            Can be used to limit the data items in memory. Note that the number of
+            data items yielded can be (far) greater than `target_batch_size`, because
+            all messages belonging to the same transaction are always processed in
+            the same batch, regardless of the number of messages in the transaction
+            and regardless of the value of `target_batch_size`. The number of data
+            items can also be smaller than `target_batch_size` when the replication
+            slot is exhausted before a batch is full.
         write_mode (Literal["merge", "append-only"]): Write mode for data processing.
-          - "merge": Default mode. Consolidates changes with existing data, creating final tables
+            - "merge": Default mode. Consolidates changes with existing data, creating final tables
             that are replicas of source tables. No historical record of change events is kept.
-          - "append-only": Adds data as a stream of changes (INSERT, UPDATE-INSERT, UPDATE-DELETE,
+            - "append-only": Adds data as a stream of changes (INSERT, UPDATE-INSERT, UPDATE-DELETE,
             DELETE events). Retains historical state of data with all change events preserved.
         flush_slot (bool): Whether processed messages are discarded from the replication
-          slot. Recommended value is True. Be careful when setting False—not flushing
-          can eventually lead to a "disk full" condition on the server, because
-          the server retains all the WAL segments that might be needed to stream
-          the changes via all of the currently open replication slots.
+            slot. Recommended value is True. Be careful when setting False—not flushing
+            can eventually lead to a "disk full" condition on the server, because
+            the server retains all the WAL segments that might be needed to stream
+            the changes via all of the currently open replication slots.
 
         Yields:
             Data items for changes published in the publication.
@@ -680,25 +680,6 @@ def replication_resource(
     logger.info(
         f"Replicating slot {slot_name} publication {publication_name} from {start_lsn} to {end_lsn}"
     )
-    # Get filtered table list if include_tables or exclude_tables is provided
-    filtered_tables = None
-    try:
-        filtered_tables = discover_schema_tables(
-            credentials=credentials,
-            schema_name=schema_name,
-            include_tables=include_tables,
-            exclude_tables=exclude_tables,
-        )
-        if not filtered_tables:
-            logger.warning(
-                f"No tables found matching the provided filters. "
-                f"Schema: {schema_name}, include_tables: {include_tables}, exclude_tables: {exclude_tables}"
-            )
-            return
-    except Exception as e:
-        logger.warning(
-            f"Failed to filter tables: {e}. Will process all tables in the publication."
-        )
 
     # generate items in batches
     while True:
@@ -713,7 +694,7 @@ def replication_resource(
             columns=columns,
             write_mode=write_mode,
             schema_name=schema_name,
-            filtered_tables=filtered_tables,
+            tables=tables,
         )
         yield from gen
         if gen.generated_all:
@@ -782,7 +763,7 @@ def discover_schema_tables(
                     ORDER BY table_name
                 """
                 cur.execute(query, (schema_name,))
-                all_tables = [row[0].split(".")[1] for row in cur.fetchall()]
+                all_tables = [row[0] for row in cur.fetchall()]
 
                 if not all_tables:
                     logger.warning(f"Schema {schema_name} has no tables")
@@ -857,6 +838,7 @@ def filter_tables(
 class ItemGenerator:
     credentials: ConnectionStringCredentials
     slot_name: str
+    tables: List[str]
     options: Dict[str, str]
     end_lsn: int
     start_lsn: int = 0
@@ -865,7 +847,6 @@ class ItemGenerator:
     columns: Optional[Dict[str, TTableSchemaColumns]] = None
     write_mode: Literal["merge", "append-only"] = "merge"
     schema_name: str = "public"
-    filtered_tables: Optional[List[str]] = None
     last_commit_lsn: Optional[int] = field(default=None, init=False)
     generated_all: bool = False
 
@@ -892,7 +873,7 @@ class ItemGenerator:
                 write_mode=self.write_mode,
                 credentials=self.credentials,
                 schema_name=self.schema_name,
-                filtered_tables=self.filtered_tables,
+                tables=self.tables,
             )
             cur.consume_stream(consumer)
         except StopReplication:  # completed batch or reached `end_lsn`
@@ -921,6 +902,7 @@ class MessageConsumer:
 
     def __init__(
         self,
+        tables: List[str],
         end_lsn: int,
         target_batch_size: int = 1000,
         include_columns: Optional[Dict[str, Sequence[str]]] = None,
@@ -928,7 +910,6 @@ class MessageConsumer:
         write_mode: Literal["merge", "append-only"] = "merge",
         credentials: Optional[ConnectionStringCredentials] = None,
         schema_name: str = "public",
-        filtered_tables: Optional[List[str]] = None,
     ) -> None:
         self.end_lsn = end_lsn
         self.target_batch_size = target_batch_size
@@ -937,7 +918,7 @@ class MessageConsumer:
         self.write_mode = write_mode
         self.credentials = credentials
         self.schema_name = schema_name
-        self.filtered_tables = set(filtered_tables) if filtered_tables else None
+        self.tables = tables
 
         # Cache for primary keys: maps (schema_name, table_name) -> list of pk column names
         self._pk_cache: Dict[Tuple[str, str], List[str]] = {}
