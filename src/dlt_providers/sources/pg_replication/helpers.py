@@ -131,11 +131,11 @@ def init_replication(
 
     rep_conn = _get_rep_conn(credentials)
     try:
-        with rep_conn.cursor() as cur:
+        with rep_conn.cursor() as rep_cur:
             if reset:
-                drop_replication_slot(slot_name, cur)
+                drop_replication_slot(slot_name, rep_cur)
                 if manage_publication:
-                    drop_publication(publication_name, cur)
+                    drop_publication(publication_name, rep_cur)
                 # Clear snapshot completion state to force re-snapshot
                 # Note: We clear state for all tables in this schema/publication
                 source_state = dlt.current.source_state()
@@ -151,44 +151,38 @@ def init_replication(
                     )
 
             # Check if publication exists and get its tables
-            publication_tables = None
+            publication_already_exist = False
             try:
-                publication_tables = get_publication_tables(publication_name, cur)
+                publication_tables = get_publication_tables(publication_name, rep_cur)
+                publication_already_exist = True
             except PublicationNotFoundError:
                 if manage_publication:
                     logger.info(
                         f"Creating publication '{publication_name}' as it doesn't exist"
                     )
-                    create_publication(publication_name, cur)
+                    create_publication(publication_name, rep_cur)
                 else:
                     raise ValueError(
                         f"Publication '{publication_name}' does not exist and manage_publication is False. "
                         "Please create the publication manually or set manage_publication=True."
                     )
 
-            # Get all tables in schema with include/exclude filters applied and
-            # extract just table names without schema prefix
-            table_names_only = [
-                name.split(".")[-1]
-                for name in discover_schema_tables(
-                    schema_name, credentials, include_tables, exclude_tables
-                )
-            ]
-
-            if not table_names_only:
+            # Get all tables in schema with include/exclude filters applied
+            tables = discover_schema_tables(
+                credentials=credentials,
+                schema_name=schema_name,
+                include_tables=include_tables,
+                exclude_tables=exclude_tables,
+            )
+            if not tables:
                 raise ValueError(
                     f"No tables found in schema '{schema_name}' after filtering"
                 )
 
-            # Verify that publication includes the needed tables
-            if table_names_only and publication_tables is not None:
-                qualified_table_names = [
-                    f"{schema_name}.{table}" for table in table_names_only
-                ]
+            # Verify that publication includes the needed tables if it already exists
+            if publication_already_exist:
                 missing_tables = [
-                    table
-                    for table in qualified_table_names
-                    if table not in publication_tables
+                    table for table in tables if table not in publication_tables
                 ]
 
                 if missing_tables:
@@ -198,14 +192,14 @@ def init_replication(
                     )
 
             # Create replication slot if it doesn't exist
-            create_replication_slot(slot_name, cur)
+            create_replication_slot(slot_name, rep_cur)
 
             # Handle initial snapshots
             if initial_snapshots:
                 # Create snapshot resources
-                for table_name in table_names_only:
+                for table_name in tables:
                     # Get primary key for the table
-                    primary_key = _get_pk(cur, table_name, schema_name)
+                    primary_key = _get_pk(credentials, schema_name, table_name)
                     # For snapshots, always use append write disposition
                     # since they are initial data loads
                     write_disposition: TWriteDisposition = "append"
@@ -527,7 +521,7 @@ def _get_rep_conn(
     return _get_conn(credentials, LogicalReplicationConnection)  # type: ignore[return-value]
 
 
-def _make_qualified_table_name(table_name: str, schema_name: str) -> str:
+def _make_qualified_table_name(schema_name: str, table_name: str) -> str:
     """Escapes and combines a schema and table name."""
     return (
         escape_postgres_identifier(schema_name)
@@ -537,31 +531,34 @@ def _make_qualified_table_name(table_name: str, schema_name: str) -> str:
 
 
 def _get_pk(
-    cur: cursor,
-    table_name: str,
+    credentials: ConnectionStringCredentials,
     schema_name: str,
+    table_name: str,
 ) -> Optional[TColumnNames]:
     """Returns primary key column(s) for postgres table.
 
     Returns None if no primary key columns exist.
     """
-    qual_name = _make_qualified_table_name(table_name, schema_name)
-    # https://wiki.postgresql.org/wiki/Retrieve_primary_key_columns
-    cur.execute(
-        f"""
-        SELECT a.attname
-        FROM   pg_index i
-        JOIN   pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey)
-        WHERE  i.indrelid = '{qual_name}'::regclass
-        AND    i.indisprimary;
-    """
-    )
-    result = [tup[0] for tup in cur.fetchall()]
-    if len(result) == 0:
-        return None
-    elif len(result) == 1:
-        return result[0]  # type: ignore[no-any-return]
-    return result
+    qual_name = _make_qualified_table_name(schema_name, table_name)
+
+    with _get_conn(credentials) as conn:
+        with conn.cursor() as cur:
+            # https://wiki.postgresql.org/wiki/Retrieve_primary_key_columns
+            cur.execute(
+                f"""
+                SELECT a.attname
+                FROM   pg_index i
+                JOIN   pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey)
+                WHERE  i.indrelid = '{qual_name}'::regclass
+                AND    i.indisprimary;
+            """
+            )
+            result = [tup[0] for tup in cur.fetchall()]
+            if len(result) == 0:
+                return None
+            elif len(result) == 1:
+                return result[0]
+            return result
 
 
 def get_publication_tables(
@@ -602,7 +599,10 @@ def get_publication_tables(
 def replication_resource(
     slot_name: str,
     publication_name: str,
+    schema_name: str,
     credentials: ConnectionStringCredentials = dlt.secrets.value,
+    include_tables: Optional[Union[str, List[str]]] = None,
+    exclude_tables: Optional[Union[str, List[str]]] = None,
     include_columns: Optional[Dict[str, Sequence[str]]] = None,
     columns: Optional[Dict[str, TTableSchemaColumns]] = None,
     target_batch_size: int = 1000,
@@ -622,7 +622,10 @@ def replication_resource(
     Args:
         slot_name (str): Name of the replication slot to consume replication messages from.
         publication_name (str): Name of the publication that publishes DML operations for the table(s).
+        schema_name (str): Name of the schema to filter tables from.
         credentials (ConnectionStringCredentials): Postgres database credentials.
+        include_tables (Optional[Union[str, List[str]]]): Glob patterns for tables to include
+        exclude_tables (Optional[Union[str, List[str]]]): Glob patterns for tables to exclude
         include_columns (Optional[Dict[str, Sequence[str]]]): Maps table name(s) to
           sequence of names of columns to include in the generated data items.
           Any column not in the sequence is excluded. If not provided, all columns
@@ -677,6 +680,26 @@ def replication_resource(
     logger.info(
         f"Replicating slot {slot_name} publication {publication_name} from {start_lsn} to {end_lsn}"
     )
+    # Get filtered table list if include_tables or exclude_tables is provided
+    filtered_tables = None
+    try:
+        filtered_tables = discover_schema_tables(
+            credentials=credentials,
+            schema_name=schema_name,
+            include_tables=include_tables,
+            exclude_tables=exclude_tables,
+        )
+        if not filtered_tables:
+            logger.warning(
+                f"No tables found matching the provided filters. "
+                f"Schema: {schema_name}, include_tables: {include_tables}, exclude_tables: {exclude_tables}"
+            )
+            return
+    except Exception as e:
+        logger.warning(
+            f"Failed to filter tables: {e}. Will process all tables in the publication."
+        )
+
     # generate items in batches
     while True:
         gen = ItemGenerator(
@@ -689,6 +712,8 @@ def replication_resource(
             include_columns=include_columns,
             columns=columns,
             write_mode=write_mode,
+            schema_name=schema_name,
+            filtered_tables=filtered_tables,
         )
         yield from gen
         if gen.generated_all:
@@ -721,12 +746,12 @@ def check_schema_exists(
                 return bool(cur.fetchone())
     except Exception as e:
         logger.error(f"Failed to check if schema {schema_name} exists: {e}")
-        return False
+        raise
 
 
 def discover_schema_tables(
-    schema_name: str,
     credentials: ConnectionStringCredentials,
+    schema_name: str,
     include_tables: Optional[Union[str, List[str]]] = None,
     exclude_tables: Optional[Union[str, List[str]]] = None,
 ) -> List[str]:
@@ -757,7 +782,7 @@ def discover_schema_tables(
                     ORDER BY table_name
                 """
                 cur.execute(query, (schema_name,))
-                all_tables = [row[0] for row in cur.fetchall()]
+                all_tables = [row[0].split(".")[1] for row in cur.fetchall()]
 
                 if not all_tables:
                     logger.warning(f"Schema {schema_name} has no tables")
@@ -767,7 +792,7 @@ def discover_schema_tables(
         return filter_tables(all_tables, include_tables, exclude_tables)
     except Exception as e:
         logger.error(f"Failed to discover tables in schema {schema_name}: {e}")
-        return []
+        raise
 
 
 def filter_tables(
@@ -839,6 +864,8 @@ class ItemGenerator:
     include_columns: Optional[Dict[str, Sequence[str]]] = None
     columns: Optional[Dict[str, TTableSchemaColumns]] = None
     write_mode: Literal["merge", "append-only"] = "merge"
+    schema_name: str = "public"
+    filtered_tables: Optional[List[str]] = None
     last_commit_lsn: Optional[int] = field(default=None, init=False)
     generated_all: bool = False
 
@@ -864,6 +891,8 @@ class ItemGenerator:
                 columns=self.columns,
                 write_mode=self.write_mode,
                 credentials=self.credentials,
+                schema_name=self.schema_name,
+                filtered_tables=self.filtered_tables,
             )
             cur.consume_stream(consumer)
         except StopReplication:  # completed batch or reached `end_lsn`
@@ -898,6 +927,8 @@ class MessageConsumer:
         columns: Optional[Dict[str, TTableSchemaColumns]] = None,
         write_mode: Literal["merge", "append-only"] = "merge",
         credentials: Optional[ConnectionStringCredentials] = None,
+        schema_name: str = "public",
+        filtered_tables: Optional[List[str]] = None,
     ) -> None:
         self.end_lsn = end_lsn
         self.target_batch_size = target_batch_size
@@ -905,6 +936,8 @@ class MessageConsumer:
         self.columns = columns
         self.write_mode = write_mode
         self.credentials = credentials
+        self.schema_name = schema_name
+        self.filtered_tables = set(filtered_tables) if filtered_tables else None
 
         # Cache for primary keys: maps (schema_name, table_name) -> list of pk column names
         self._pk_cache: Dict[Tuple[str, str], List[str]] = {}
@@ -974,12 +1007,8 @@ class MessageConsumer:
         """Get primary key columns for a table, using cache if available."""
         cache_key = (schema_name, table_name)
         if cache_key not in self._pk_cache and self.credentials:
-            with _get_conn(self.credentials) as conn:
-                with conn.cursor() as cur:
-                    pk = _get_pk(cur, table_name, schema_name)
-                    self._pk_cache[cache_key] = (
-                        [pk] if isinstance(pk, str) else (pk or [])
-                    )
+            pk = _get_pk(self.credentials, schema_name, table_name)
+            self._pk_cache[cache_key] = [pk] if isinstance(pk, str) else (pk or [])
         return self._pk_cache.get(cache_key, [])
 
     def _is_schema_changed(self, decoded_msg: Relation) -> bool:
