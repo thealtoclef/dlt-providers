@@ -4,7 +4,7 @@ version = "0.0.0"
 description = "Providers for data load tool (dlt)"
 readme = "README.md"
 requires-python = ">=3.10"
-dependencies = ["dlt==1.12.3", "connectorx==0.4.3", "pyarrow==20.0.0"]
+dependencies = ["dlt>=1.12.3,<1.13.0", "connectorx", "pyarrow"]
 
 [project.optional-dependencies]
 pg_replication = ["psycopg2-binary==2.9.10"]

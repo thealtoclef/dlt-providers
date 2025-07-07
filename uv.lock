@@ -313,13 +313,13 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "connectorx", specifier = "==0.4.3" },
+    { name = "connectorx" },
     { name = "cryptography", marker = "extra == 'mysql-replication'", specifier = "==45.0.4" },
-    { name = "dlt", specifier = "==1.12.3" },
+    { name = "dlt", specifier = ">=1.12.3,<1.13.0" },
     { name = "mysql-replication", marker = "extra == 'mysql-replication'", specifier = "==0.46.0" },
     { name = "plpygis", marker = "extra == 'mysql-replication'", specifier = "==0.5.5" },
     { name = "psycopg2-binary", marker = "extra == 'pg-replication'", specifier = "==2.9.10" },
-    { name = "pyarrow", specifier = "==20.0.0" },
+    { name = "pyarrow" },
 ]
 provides-extras = ["pg-replication", "mysql-replication"]
 
