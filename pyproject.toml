@@ -7,7 +7,7 @@ requires-python = ">=3.10"
 dependencies = ["dlt>=1.12.3,<1.13.0", "connectorx", "pyarrow"]
 
 [project.optional-dependencies]
-pg_replication = ["psycopg2-binary==2.9.10"]
+pg_replication = ["psycopg2-binary"]
 mysql_replication = [
     "mysql-replication==0.46.0",
     "cryptography==45.0.4",
