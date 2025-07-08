@@ -101,10 +101,9 @@ def source_setup(
 
 
 def build_snapshot_query(
+    credentials: ConnectionStringCredentials,
     table_name: str,
     schema_name: str,
-    include_columns: Optional[Sequence[str]],
-    credentials: ConnectionStringCredentials,
 ) -> str:
     """Build a SQL query for snapshot with type casting for unsupported MySQL types.
 
@@ -112,10 +111,9 @@ def build_snapshot_query(
     unsupported types to TEXT to prevent ConnectorX from panicking.
 
     Args:
+        credentials: Database connection credentials
         table_name: Name of the table to snapshot
         schema_name: Database schema name
-        include_columns: Specific columns to include, if None includes all
-        credentials: Database connection credentials
 
     Returns:
         SQL query string with appropriate type casting
@@ -140,11 +138,6 @@ def build_snapshot_query(
 
     if not columns_info:
         raise ValueError(f"Table {qualified_table} not found or has no columns")
-
-    # Filter columns if include_columns is specified
-    if include_columns:
-        include_set = set(include_columns)
-        columns_info = [col for col in columns_info if col[0] in include_set]
 
     # Build SELECT clause with type casting
     select_parts = []
@@ -177,13 +170,13 @@ def build_snapshot_query(
     section_arg_name="server_id",
 )
 def snapshot_table_resource(
+    credentials: ConnectionStringCredentials,
     schema_name: str,
     table_name: str,
+    columns: TTableSchemaColumns,
     primary_key: TColumnNames,
     write_disposition: TWriteDisposition,
-    columns: TTableSchemaColumns = None,
-    credentials: ConnectionStringCredentials = dlt.secrets.value,
-    include_columns: Optional[Sequence[str]] = None,
+    batch_size: int = 1000,
 ) -> DltResource:
     """Returns a state-aware resource for direct table snapshot using ConnectorX.
 
@@ -197,13 +190,13 @@ def snapshot_table_resource(
     - Cast unsupported MySQL types to CHAR to prevent ConnectorX panics
 
     Args:
+        credentials: Database connection credentials
         schema_name: Database schema name
         table_name: Name of the table in the database and destination
+        columns: Column schema hints
         primary_key: Primary key column(s) for the table
         write_disposition: How to write data (append, replace, merge)
-        columns: Column schema hints
-        credentials: Database connection credentials
-        include_columns: Specific columns to include in the snapshot
+        batch_size: Target batch size for ConnectorX.
 
     Returns:
         DltResource: A resource that can be used to load the table data
@@ -223,28 +216,26 @@ def snapshot_table_resource(
 
         # Build the SQL query with type casting for unsupported types
         query = build_snapshot_query(
-            table_name, schema_name, include_columns, credentials
+            credentials=credentials,
+            table_name=table_name,
+            schema_name=schema_name,
         )
 
         # Use ConnectorX to read data
         try:
-            data = cx.read_sql(
+            reader = cx.read_sql(
                 conn=credentials.to_native_representation(),
                 query=query,
                 protocol="binary",
-                return_type="arrow",
+                return_type="arrow_record_batches",
+                record_batch_size=batch_size,
             )
+            for batch in reader:
+                yield batch
 
-            # Yield the data if any was returned
-            if len(data) > 0:
-                yield data
-                # Mark snapshot as completed
-                source_state[state_key] = True
-                logger.info(
-                    f"Marked snapshot as completed for {schema_name}.{table_name}"
-                )
-            else:
-                logger.info(f"No data found for {schema_name}.{table_name}")
+            # Mark snapshot as completed
+            source_state[state_key] = True
+            logger.info(f"Marked snapshot as completed for {schema_name}.{table_name}")
 
         except Exception as e:
             logger.error(f"Error reading snapshot for {schema_name}.{table_name}: {e}")
@@ -269,9 +260,8 @@ def create_snapshot_resources(
     credentials: ConnectionStringCredentials,
     schema_name: str,
     tables: List[str],
-    include_columns: Optional[Dict[str, Sequence[str]]] = None,
     columns: Optional[Dict[str, TTableSchemaColumns]] = None,
-    reset: bool = False,
+    batch_size: int = 1000,
 ) -> List[DltResource]:
     """Create snapshot resources for the specified tables.
 
@@ -279,52 +269,37 @@ def create_snapshot_resources(
         credentials: MySQL database credentials.
         schema_name: MySQL database/schema name.
         tables: List of table names to create snapshot resources for.
-        include_columns: Maps table name(s) to sequence of column names to include.
-            Any column not in the sequence is excluded. If not provided, all columns
-            are included.
         columns: Maps table name(s) to column hints to apply on the snapshot table(s).
-        reset: If True, clears snapshot completion state to force re-snapshot.
+        batch_size: Desired number of data items yielded in a batch.
 
     Returns:
         List of DltResource objects for the snapshot tables.
     """
     resources = []
 
-    if reset:
-        # Clear snapshot completion state to force re-snapshot
-        source_state = dlt.current.source_state()
-        state_prefix = f"snapshots_completed_{schema_name}_"
-        keys_to_delete = [
-            key for key in source_state.keys() if key.startswith(state_prefix)
-        ]
-        for key in keys_to_delete:
-            del source_state[key]
-        if keys_to_delete:
-            logger.info(
-                f"Cleared {len(keys_to_delete)} snapshot completion states for schema {schema_name}"
-            )
+    for table_name in tables:
+        # Get primary key for the table
+        primary_key = _get_pk(
+            credentials=credentials,
+            schema_name=schema_name,
+            table_name=table_name,
+        )
 
-    with _get_conn(credentials) as conn:
-        with conn.cursor() as cur:
-            for table_name in tables:
-                # Get primary key for the table
-                primary_key = _get_pk(cur, table_name, schema_name)
-                # For snapshots, always use append write disposition
-                # since they are initial data loads
-                write_disposition: TWriteDisposition = "append"
-                resources.append(
-                    snapshot_table_resource(
-                        schema_name=schema_name,
-                        table_name=table_name,
-                        primary_key=primary_key,
-                        write_disposition=write_disposition,
-                        columns=columns.get(table_name) if columns else None,
-                        credentials=credentials,
-                        include_columns=include_columns.get(table_name)
-                        if include_columns
-                        else None,
-                    )
-                )
+        # For snapshots, always use append write disposition since they are initial data loads
+        write_disposition: TWriteDisposition = "append"
+
+        # Create snapshot resource and append to list
+        resources.append(
+            snapshot_table_resource(
+                credentials=credentials,
+                schema_name=schema_name,
+                table_name=table_name,
+                columns=columns.get(table_name) if columns else None,
+                primary_key=primary_key,
+                write_disposition=write_disposition,
+                batch_size=batch_size,
+            )
+        )
 
     return resources
 
@@ -526,31 +501,34 @@ def _get_mysql_settings(credentials: ConnectionStringCredentials) -> Dict[str, A
 
 
 def _get_pk(
-    cur: pymysql.cursors.Cursor,
-    table_name: str,
+    credentials: ConnectionStringCredentials,
     schema_name: str,
+    table_name: str,
 ) -> Optional[TColumnNames]:
     """Returns primary key column(s) for MySQL table.
 
     Returns None if no primary key columns exist.
     """
-    # Query to get primary key columns for MySQL
-    query = """
-        SELECT COLUMN_NAME
-        FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE
-        WHERE TABLE_SCHEMA = %s
-        AND TABLE_NAME = %s
-        AND CONSTRAINT_NAME = 'PRIMARY'
-        ORDER BY ORDINAL_POSITION
-    """
-    cur.execute(query, (schema_name, table_name))
-    result = [row[0] for row in cur.fetchall()]
-    if len(result) == 0:
-        return None
-    elif len(result) == 1:
-        return result[0]  # type: ignore[no-any-return]
-    else:
-        return result  # type: ignore[no-any-return]
+
+    with _get_conn(credentials) as conn:
+        with conn.cursor() as cur:
+            # Query to get primary key columns for MySQL
+            query = """
+                SELECT COLUMN_NAME
+                FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE
+                WHERE TABLE_SCHEMA = %s
+                AND TABLE_NAME = %s
+                AND CONSTRAINT_NAME = 'PRIMARY'
+                ORDER BY ORDINAL_POSITION
+            """
+            cur.execute(query, (schema_name, table_name))
+            result = [row[0] for row in cur.fetchall()]
+            if len(result) == 0:
+                return None
+            elif len(result) == 1:
+                return result[0]
+            else:
+                return result
 
 
 def _get_conn(credentials: ConnectionStringCredentials) -> pymysql.Connection:
@@ -572,9 +550,8 @@ def replication_resource(
     schema_name: str,
     server_id: int,
     tables: List[str],
-    include_columns: Optional[Dict[str, Sequence[str]]] = None,
     columns: Optional[Dict[str, TTableSchemaColumns]] = None,
-    target_batch_size: int = 1000,
+    batch_size: int = 1000,
     write_mode: Literal["merge", "append-only"] = "merge",
 ) -> Iterable[TDataItem]:
     """Resource yielding data items for changes in MySQL tables via binlog replication.
@@ -588,12 +565,9 @@ def replication_resource(
         server_id: Unique server ID for MySQL replication connection
         schema_name: MySQL database/schema name
         credentials: MySQL database credentials
-        include_columns: Maps table name(s) to sequence of column names to include
         columns: Maps table name(s) to column hints to apply
-        target_batch_size: Desired number of data items yielded in a batch
+        batch_size: Desired number of data items yielded in a batch.
         write_mode: "merge" for final state tables, "append-only" for change stream
-        include_tables: Glob patterns for tables to include. If not provided, all tables are included
-        exclude_tables: Glob patterns for tables to exclude. These patterns are applied after include_tables
 
     Yields:
         Data items for changes in the MySQL tables
@@ -638,8 +612,7 @@ def replication_resource(
             "options": options,
             "end_log_file": end_log_file,
             "end_log_pos": end_log_pos,
-            "target_batch_size": target_batch_size,
-            "include_columns": include_columns,
+            "batch_size": batch_size,
             "columns": columns,
             "write_mode": write_mode,
         }
@@ -834,8 +807,7 @@ class ItemGenerator:
     start_gtid: Optional[str] = None
     start_log_file: Optional[str] = None
     start_log_pos: Optional[int] = None
-    target_batch_size: int = 1000
-    include_columns: Optional[Dict[str, Sequence[str]]] = None
+    batch_size: int = 1000
     columns: Optional[Dict[str, TTableSchemaColumns]] = None
     write_mode: Literal["merge", "append-only"] = "merge"
     last_event_gtid: Optional[str] = field(default=None, init=False)
@@ -861,8 +833,7 @@ class ItemGenerator:
             reader=reader,
             end_log_file=self.end_log_file,
             end_log_pos=self.end_log_pos,
-            target_batch_size=self.target_batch_size,
-            include_columns=self.include_columns,
+            batch_size=self.batch_size,
             columns=self.columns,
             write_mode=self.write_mode,
             credentials=self.credentials,
@@ -901,8 +872,7 @@ class MessageConsumer:
         reader: BinLogStreamReader,
         end_log_file: str,
         end_log_pos: int,
-        target_batch_size: int = 1000,
-        include_columns: Optional[Dict[str, Sequence[str]]] = None,
+        batch_size: int = 1000,
         columns: Optional[Dict[str, TTableSchemaColumns]] = None,
         write_mode: Literal["merge", "append-only"] = "merge",
         credentials: Optional[ConnectionStringCredentials] = None,
@@ -910,8 +880,7 @@ class MessageConsumer:
         self.end_log_file = end_log_file
         self.end_log_pos = end_log_pos
         self.end_lsn = _make_lsn(end_log_file, end_log_pos)
-        self.target_batch_size = target_batch_size
-        self.include_columns = include_columns
+        self.batch_size = batch_size
         self.columns = columns
         self.write_mode = write_mode
         self.credentials = credentials
@@ -939,7 +908,7 @@ class MessageConsumer:
         Message treatment is different for various message types.
         Breaks out of stream with StopReplication exception when
         - `end_lsn` is reached
-        - `target_batch_size` is reached
+        - `batch_size` is reached
         - a table's schema has changed
         """
 
@@ -982,12 +951,13 @@ class MessageConsumer:
         """Get primary key columns for a table, using cache if available."""
         cache_key = (schema_name, table_name)
         if cache_key not in self._pk_cache and self.credentials:
-            with _get_conn(self.credentials) as conn:
-                with conn.cursor() as cur:
-                    pk = _get_pk(cur, table_name, schema_name)
-                    self._pk_cache[cache_key] = (
-                        [pk] if isinstance(pk, str) else (pk or [])
-                    )
+            pk = _get_pk(
+                credentials=self.credentials,
+                schema_name=schema_name,
+                table_name=table_name,
+            )
+            self._pk_cache[cache_key] = [pk] if isinstance(pk, str) else (pk or [])
+
         return self._pk_cache.get(cache_key, [])
 
     def _is_schema_changed(self, event: RowsEvent) -> bool:
@@ -1009,11 +979,6 @@ class MessageConsumer:
 
         last_columns = set(self.last_table_schema[relation_id]["columns"].keys())
         event_columns = set([col.name for col in event.columns])
-
-        # If include_columns is defined, only check those columns in the event
-        if self.include_columns and table_name in self.include_columns:
-            included_columns = set(self.include_columns[table_name])
-            event_columns = event_columns.intersection(included_columns)
 
         # Compare the filtered column sets
         return last_columns != event_columns
@@ -1047,16 +1012,7 @@ class MessageConsumer:
             "columns": columns,
         }
 
-        # apply user input
-        # 1) exclude columns
-        include_columns = (
-            None
-            if self.include_columns is None
-            else self.include_columns.get(table_name)
-        )
-        if include_columns is not None:
-            columns = {k: v for k, v in columns.items() if k in include_columns}
-        # 2) override source hints
+        # override source hints
         column_hints: TTableSchemaColumns = (
             {} if self.columns is None else self.columns.get(table_name, {})
         )
@@ -1116,11 +1072,6 @@ class MessageConsumer:
                 lsn=lsn,
                 event_ts=event.timestamp,
                 for_delete=isinstance(event, DeleteRowsEvent),
-                include_columns=(
-                    None
-                    if self.include_columns is None
-                    else self.include_columns.get(table_name)
-                ),
             )
             self.data_items[relation_id].append(data_item)
 
@@ -1132,7 +1083,6 @@ class MessageConsumer:
         lsn: int,
         event_ts: pendulum.DateTime,
         for_delete: bool,
-        include_columns: Optional[Sequence[str]] = None,
     ) -> TDataItem:
         """Generates data item from row event data and corresponding metadata."""
         data_item = {
@@ -1143,7 +1093,6 @@ class MessageConsumer:
                 for_delete=for_delete,
             )
             for col_name, col_value in data.items()
-            if (include_columns is None or col_name in include_columns)
         }
         data_item["_dlt_lsn"] = lsn
         if for_delete:
