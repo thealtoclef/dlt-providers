@@ -4,7 +4,7 @@ version = "0.0.0"
 description = "Providers for data load tool (dlt)"
 readme = "README.md"
 requires-python = ">=3.10"
-dependencies = ["dlt>=1.12.3,<1.13.0", "thealtoclef-connectorx[arrow]==0.4.4a1"]
+dependencies = ["dlt>=1.12.3,<1.13.0", "thealtoclef-connectorx[pyarrow]==0.4.4a1"]
 
 [project.optional-dependencies]
 pg_replication = ["psycopg2-binary"]
