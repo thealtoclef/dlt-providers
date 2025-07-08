@@ -912,25 +912,30 @@ class MessageConsumer:
         - a table's schema has changed
         """
         op = msg.payload[0]
-        if op == 73:  # ASCII for 'I'
+        if op == 73:  # 'I' - Insert
             self.process_change(Insert(msg.payload), msg.data_start)
-        elif op == 85:  # ASCII for 'U'
+        elif op == 85:  # 'U' - Update
             self.process_change(Update(msg.payload), msg.data_start)
-        elif op == 68:  # ASCII for 'D'
+        elif op == 68:  # 'D' - Delete
             self.process_change(Delete(msg.payload), msg.data_start)
-        elif op == 66:  # ASCII for 'B'
-            self.last_commit_ts = Begin(msg.payload).commit_ts  # type: ignore[assignment]
-        elif op == 67:  # ASCII for 'C'
+        elif op == 66:  # 'B' - Begin
+            self.last_commit_ts = Begin(msg.payload).commit_ts
+        elif op == 67:  # 'C' - Commit
             self.process_commit(msg)
-        elif op == 82:  # ASCII for 'R'
+        elif op == 82:  # 'R' - Relation
             self.process_relation(Relation(msg.payload))
-        elif op == 84:  # ASCII for 'T'
-            logger.warning(
-                "The truncate operation is currently not supported. "
-                "Truncate replication messages are ignored."
-            )
+        elif op in (
+            84,  # 'T' (Truncate)
+            89,  # 'Y' (Type)
+            79,  # 'O' (Origin)
+            83,  # 'S' (Savepoint)
+            77,  # 'M' (Message)
+        ):
+            logger.debug(f"Skipping message type: {chr(op)} (0x{op:02x})")
         else:
-            raise ValueError(f"Unknown replication op {op}")
+            raise ValueError(
+                f"Unknown or unsupported replication message type: {chr(op)} (0x{op:02x})"
+            )
 
     def process_commit(self, msg: ReplicationMessage) -> None:
         """Updates object state when Commit message is observed.
