@@ -18,11 +18,11 @@ wheels = [
 
 [[package]]
 name = "certifi"
-version = "2025.6.15"
+version = "2025.7.9"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/73/f7/f14b46d4bcd21092d7d3ccef689615220d8a08fb25e564b65d20738e672e/certifi-2025.6.15.tar.gz", hash = "sha256:d747aa5a8b9bbbb1bb8c22bb13e22bd1f18e9796defa16bab421f7f7a317323b", size = 158753, upload-time = "2025-06-15T02:45:51.329Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/de/8a/c729b6b60c66a38f590c4e774decc4b2ec7b0576be8f1aa984a53ffa812a/certifi-2025.7.9.tar.gz", hash = "sha256:c1d2ec05395148ee10cf672ffc28cd37ea0ab0d99f9cc74c43e588cbd111b079", size = 160386, upload-time = "2025-07-09T02:13:58.874Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/84/ae/320161bd181fc06471eed047ecce67b693fd7515b16d495d8932db763426/certifi-2025.6.15-py3-none-any.whl", hash = "sha256:2e0c7ce7cb5d8f8634ca55d2ba7e6ec2689a2fd6537d8dec1296a477a4910057", size = 157650, upload-time = "2025-06-15T02:45:49.977Z" },
+    { url = "https://files.pythonhosted.org/packages/66/f3/80a3f974c8b535d394ff960a11ac20368e06b736da395b551a49ce950cce/certifi-2025.7.9-py3-none-any.whl", hash = "sha256:d842783a14f8fdd646895ac26f719a061408834473cfc10203f6a575beb15d39", size = 159230, upload-time = "2025-07-09T02:13:57.007Z" },
 ]
 
 [[package]]
@@ -290,7 +290,7 @@ requires-dist = [
     { name = "mysql-replication", marker = "extra == 'mysql-replication'", specifier = "==0.46.0" },
     { name = "plpygis", marker = "extra == 'mysql-replication'", specifier = "==0.5.5" },
     { name = "psycopg2-binary", marker = "extra == 'pg-replication'" },
-    { name = "thealtoclef-connectorx", extras = ["pyarrow"], specifier = "==0.4.4a1" },
+    { name = "thealtoclef-connectorx", extras = ["pyarrow"], specifier = "==2025.7.9rc0" },
 ]
 provides-extras = ["pg-replication", "mysql-replication"]
 
@@ -1301,15 +1301,15 @@ wheels = [
 
 [[package]]
 name = "thealtoclef-connectorx"
-version = "0.4.4a1"
+version = "2025.7.9rc0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "numpy", version = "2.3.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/82/36/ed0de3adc2cb1b3299adf395b3dd21f89036831a4cbe382e7a79bae6eb1b/thealtoclef_connectorx-0.4.4a1.tar.gz", hash = "sha256:35a3d8a4b8c4618bc75e9afe98a5b827573fd655828e291dd78229976c16410f", size = 275352, upload-time = "2025-07-08T15:46:00.898Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/5d/f0/b0b737c575acc7146f0567cdb34f495f3da510670387dc084a77b1f7197e/thealtoclef_connectorx-2025.7.9rc0.tar.gz", hash = "sha256:d7dc6bdb02d474fd16b214528756cf839da1fdf0223f4beaff6afd1001c95a7d", size = 282851, upload-time = "2025-07-09T05:48:38.894Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/64/7c/a0263a1b2b0cd6b9de8398936df2bd678c04bf3f93d69eeda1230a046f9e/thealtoclef_connectorx-0.4.4a1-cp310-cp310-manylinux_2_28_x86_64.whl", hash = "sha256:f909ab398214cfacd8c573186bd163f62d0432f407e3232a9d728378f894b318", size = 43751865, upload-time = "2025-07-08T15:45:57.581Z" },
+    { url = "https://files.pythonhosted.org/packages/ec/22/5524f7bc02c438f405fafa9e3b6c4321217e1844be14ae5dc562ee39305e/thealtoclef_connectorx-2025.7.9rc0-cp310-cp310-manylinux_2_28_x86_64.whl", hash = "sha256:eff6d84d0b19d75dd6d1e6733491277a333511f5cf82e61a41fdc6059358e552", size = 43752306, upload-time = "2025-07-09T05:48:35.176Z" },
 ]
 
 [package.optional-dependencies]
