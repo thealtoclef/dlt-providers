@@ -345,8 +345,8 @@ def snapshot_table_resource(
                 conn=credentials.to_native_representation(),
                 query=query,
                 protocol="binary",
-                return_type="arrow_record_batches",
-                record_batch_size=batch_size,
+                return_type="arrow_stream",
+                batch_size=batch_size,
             )
             for batch in reader:
                 yield batch
