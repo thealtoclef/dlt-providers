@@ -283,7 +283,7 @@ class MySQLReplicationE2eTest(DltE2eTest):
                 },
                 run_kwargs={
                     "data": source,
-                    "loader_file_format": "parquet",
+                    "loader_file_format": "jsonl",
                     "schema_contract": "evolve",
                 },
             )
