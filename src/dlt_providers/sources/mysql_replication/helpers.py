@@ -600,9 +600,11 @@ def replication_resource(
         start_log_pos = resource_state.get(
             "last_event_log_pos", source_state.get("init_log_pos")
         )
-        end_log_file, end_log_pos = _get_current_log_file_and_pos(credentials)
         options["only_events"].append(RotateEvent)
         options["resume_stream"] = True
+
+    # Get current log file and position
+    end_log_file, end_log_pos = _get_current_log_file_and_pos(credentials)
 
     # generate items in batches
     while True:
